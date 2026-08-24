@@ -1,12 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-  cap,
-  BTW,
-  HANDOFF,
-  MODEL_OUTPUT,
-  PARALLEL_CHILD,
-  type Destination,
-} from "../cap.js";
+import { cap, BTW, HANDOFF, MODEL_OUTPUT, PARALLEL_CHILD, type Destination } from "../cap.js";
 
 const DESTINATIONS: Array<[string, Destination]> = [
   ["model output", MODEL_OUTPUT],

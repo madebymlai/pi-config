@@ -1,10 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { getFinalText } from "../engine/index.js";
-import {
-  createChildPool,
-  type ChildEvent,
-  type ChildResult,
-} from "../engine/index.js";
+import { createChildPool, type ChildEvent, type ChildResult } from "../engine/index.js";
 import type { ChildExit, ChildInvocation } from "../engine/spawn.js";
 import { messageLine, waitFor } from "./support/fake-child.js";
 

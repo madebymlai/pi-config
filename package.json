@@ -10,14 +10,17 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "oxfmt": "^0.58.0",
+    "oxlint": "^1.73.0",
     "prettier": "^3.9.5",
     "typescript": "^7.0.2"
   },
   "type": "module",
   "scripts": {
     "check": "tsc --noEmit",
-    "format": "prettier --write \"extensions/**/*.{ts,cjs}\" \"*.json\"",
-    "format:check": "prettier --check \"extensions/**/*.{ts,cjs}\" \"*.json\"",
-    "test": "npm --prefix extensions/subagent test"
+    "format": "prettier --write \"extensions/ask-user/**/*.{ts,cjs}\" \"*.json\" && oxfmt --write extensions/subagent",
+    "format:check": "prettier --check \"extensions/ask-user/**/*.{ts,cjs}\" \"*.json\" && oxfmt --check extensions/subagent",
+    "lint": "oxlint extensions/subagent --ignore-pattern test",
+    "test": "bun test extensions/subagent"
   }
 }
