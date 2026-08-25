@@ -39,8 +39,7 @@ import {
 
 import { shellEscape } from "../spawn/tmux.ts";
 import {
-  capStatusLines,
-  formatStatusAggregate,
+  renderStatusDigest,
   formatStatusLine,
   formatTransitionLine,
 } from "../render/status.ts";
@@ -627,16 +626,15 @@ describe("status.ts", () => {
       "recovered",
     );
     const lines = [waitingLine, recoveredLine, "Scout running 2m.", "Reviewer running 4m.", "Planner running 6m."];
-    const capped = capStatusLines(lines, 3);
-    const aggregate = formatStatusAggregate(lines, 3);
+    const digest = renderStatusDigest(lines, 3);
 
     assert.equal(waitingLine, "Worker running 5m, waiting 2m.");
     assert.equal(recoveredLine, "Worker running 7m, recovered; active (bash 1s).");
-    assert.deepEqual(capped.visibleLines, [waitingLine, recoveredLine, "Scout running 2m."]);
-    assert.equal(capped.overflow, 2);
-    assert.match(aggregate, /^Subagent status:/);
-    assert.match(aggregate, /\+2 more running\./);
-    assert.doesNotMatch(aggregate, /\/tmp|\.jsonl/);
+    assert.deepEqual(digest.visibleLines, [waitingLine, recoveredLine, "Scout running 2m."]);
+    assert.equal(digest.overflow, 2);
+    assert.match(digest.content, /^Subagent status:/);
+    assert.match(digest.content, /\+2 more running\./);
+    assert.doesNotMatch(digest.content, /\/tmp|\.jsonl/);
   });
 });
 

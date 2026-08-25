@@ -3,11 +3,15 @@ import type {
   SubagentStatusTransition,
 } from "../observe/status-snapshot.ts";
 
-export const MAX_STATUS_NAME_LENGTH = 72;
-export const MAX_STATUS_LINE_LENGTH = 120;
+const MAX_STATUS_NAME_LENGTH = 72;
+const MAX_STATUS_LINE_LENGTH = 120;
 
-export interface CappedStatusLines {
+interface StatusDigest {
+  /** What to send as the message body. */
+  content: string;
+  /** Exactly the lines `content` shows, for the renderer to lay out. */
   visibleLines: string[];
+  /** How many were left out, already stated in `content`. */
   overflow: number;
 }
 
@@ -17,7 +21,7 @@ function truncateText(text: string, maxLength: number): string {
   return `${text.slice(0, maxLength - 1)}…`;
 }
 
-export function normalizeStatusName(name: string): string {
+function normalizeStatusName(name: string): string {
   const collapsed = name.replace(/\s+/g, " ").trim() || "subagent";
   return truncateText(collapsed, MAX_STATUS_NAME_LENGTH);
 }
@@ -87,17 +91,21 @@ export function formatTransitionLine(
   return formatStatusLine(boundedName, snapshot);
 }
 
-export function capStatusLines(lines: string[], lineLimit: number): CappedStatusLines {
+/**
+ * One status digest: the text to steer with, and the lines it was built from.
+ *
+ * These come back together because they have to agree. The caller used to cap
+ * the lines itself for the message details and then hand the same uncapped list
+ * and the same limit to a separate formatter for the message content, trusting
+ * the two to cap identically. Nothing enforced that, and a divergence would have
+ * shown a box listing different subagents than the sentence beside it.
+ */
+export function renderStatusDigest(lines: string[], lineLimit: number): StatusDigest {
   const visibleLines = lines.slice(0, lineLimit);
-  return {
-    visibleLines,
-    overflow: Math.max(0, lines.length - visibleLines.length),
-  };
-}
+  const overflow = Math.max(0, lines.length - visibleLines.length);
 
-export function formatStatusAggregate(lines: string[], lineLimit: number): string {
-  const { visibleLines, overflow } = capStatusLines(lines, lineLimit);
   const bulletLines = visibleLines.map((line) => `• ${line}`);
   if (overflow > 0) bulletLines.push(`• +${overflow} more running.`);
-  return `Subagent status:\n${bulletLines.join("\n")}`;
+
+  return { visibleLines, overflow, content: `Subagent status:\n${bulletLines.join("\n")}` };
 }

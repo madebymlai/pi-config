@@ -55,9 +55,8 @@ import { readNameRegistry, registerName, resolveNameInRegistry } from "./store/n
 // Only the aggregate formatting and config are still index.ts's business;
 // everything about an individual subagent's status now sits behind liveness.ts.
 import {
-  capStatusLines,
-  formatStatusAggregate,
   formatTransitionLine,
+  renderStatusDigest,
 } from "./render/status.ts";
 import { createLiveness, getSubagentActivityFile, type SubagentLiveness } from "./observe/liveness.ts";
 import {
@@ -436,13 +435,13 @@ function startStatusRefresh(pi: ExtensionAPI) {
     if (shouldRefreshWidget) updateWidget();
 
     if (transitionLines.length > 0) {
-      const capped = capStatusLines(transitionLines, statusConfig.lineLimit);
+      const digest = renderStatusDigest(transitionLines, statusConfig.lineLimit);
       pi.sendMessage(
         {
           customType: "subagent_status",
-          content: formatStatusAggregate(transitionLines, statusConfig.lineLimit),
+          content: digest.content,
           display: true,
-          details: { lines: capped.visibleLines, overflow: capped.overflow },
+          details: { lines: digest.visibleLines, overflow: digest.overflow },
         },
         { triggerTurn: true, deliverAs: "steer" },
       );
