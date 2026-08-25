@@ -8,7 +8,7 @@ const ENV: SpawnEnvironment = {
   restricted: false,
   muxAvailable: () => true,
   hasSessionFile: () => true,
-  setupHint: () => "install tmux",
+  muxUnavailableMessage: () => "tmux is required. install it.",
 };
 
 const env = (over: Partial<SpawnEnvironment> = {}): SpawnEnvironment => ({ ...ENV, ...over });
@@ -39,8 +39,21 @@ describe("spawn-guard.ts", () => {
       assert.equal(r?.status, "agent-required");
     });
 
-    it("treats a blank agent as missing", () => {
-      assert.equal(refuseSpawn({ agent: "   " }, env())?.status, "agent-required");
+    it("treats a whitespace-only agent as unknown, not as missing", () => {
+      assert.equal(refuseSpawn({ agent: "   " }, env())?.status, "unknown-agent");
+    });
+
+    // Regression: trimming here once passed the whitelist while leaving the
+    // padded name to be looked up downstream, which found no role file and so
+    // launched an unrestricted, full-toolset child.
+    it("refuses a permitted agent whose name is padded", () => {
+      for (const padded of [" scout", "scout ", " scout ", "scout\t"]) {
+        assert.equal(
+          refuseSpawn({ agent: padded }, env())?.status,
+          "unknown-agent",
+          `${JSON.stringify(padded)} must not pass the whitelist`,
+        );
+      }
     });
 
     it("rejects an agent outside the permitted set", () => {
@@ -126,22 +139,22 @@ describe("spawn-guard.ts", () => {
 
     it("distinguishes an allowlist miss from an unknown agent", () => {
       const restricted = describeRefusal({
-        status: "unknown-agent",
+        status: "not-in-allowlist",
         agent: "x",
         permitted: ["scout"],
-        restricted: true,
       });
       assert.match(restricted.text, /in your allowlist/);
       assert.equal(restricted.error, "agent not in allowlist");
 
-      const unknown = describeRefusal({
-        status: "unknown-agent",
-        agent: "x",
-        permitted: ["scout"],
-        restricted: false,
-      });
+      const unknown = describeRefusal({ status: "unknown-agent", agent: "x", permitted: ["scout"] });
       assert.match(unknown.text, /a known agent/);
       assert.equal(unknown.error, "unknown agent");
+    });
+
+    it("picks the allowlist variant only when the session is restricted", () => {
+      const pinned = refuseSpawn({ agent: "nope" }, env({ restricted: true }));
+      assert.equal(pinned?.status, "not-in-allowlist");
+      assert.equal(refuseSpawn({ agent: "nope" }, env({ restricted: false }))?.status, "unknown-agent");
     });
 
     it("explains why parent is reserved", () => {
@@ -150,9 +163,9 @@ describe("spawn-guard.ts", () => {
       assert.equal(error, "reserved name");
     });
 
-    it("passes the setup hint through for a missing multiplexer", () => {
-      const { text, error } = describeRefusal({ status: "no-mux", setupHint: "brew install tmux" });
-      assert.match(text, /brew install tmux/);
+    it("quotes the multiplexer message verbatim", () => {
+      const { text, error } = describeRefusal({ status: "no-mux", message: "needs tmux; install it" });
+      assert.equal(text, "needs tmux; install it");
       assert.equal(error, "tmux not available");
     });
 
@@ -175,7 +188,7 @@ describe("spawn-guard.ts", () => {
         restricted: false,
         muxAvailable: count(true),
         hasSessionFile: count(true),
-        setupHint: count("hint"),
+        muxUnavailableMessage: count("hint"),
       });
       assert.equal(touched, 0, "environment was probed for an invalid request");
     });

@@ -20,10 +20,13 @@ export type SpawnRefusal =
   | { status: "self-spawn"; agent: string }
   /** No agent named. There is no agentless spawn route. */
   | { status: "agent-required"; permitted: string[] }
-  | { status: "unknown-agent"; agent: string; permitted: string[]; restricted: boolean }
+  /** Named an agent this session may not spawn, because it was pinned to a set. */
+  | { status: "not-in-allowlist"; agent: string; permitted: string[] }
+  /** Named an agent that does not exist. */
+  | { status: "unknown-agent"; agent: string; permitted: string[] }
   /** `parent` addresses the spawner, so a subagent may not hold it. */
   | { status: "reserved-name" }
-  | { status: "no-mux"; setupHint: string }
+  | { status: "no-mux"; message: string }
   | { status: "no-session-file" };
 
 export interface SpawnRequest {
@@ -46,8 +49,8 @@ export interface SpawnEnvironment {
   restricted: boolean;
   muxAvailable: () => boolean;
   hasSessionFile: () => boolean;
-  /** How to install the multiplexer, quoted verbatim if it is missing. */
-  setupHint: () => string;
+  /** What to tell the caller when the multiplexer is missing, quoted verbatim. */
+  muxUnavailableMessage: () => string;
 }
 
 /**
@@ -59,7 +62,12 @@ export interface SpawnEnvironment {
  * request rather than whichever check ran first.
  */
 export function refuseSpawn(request: SpawnRequest, env: SpawnEnvironment): SpawnRefusal | null {
-  const agent = request.agent?.trim();
+  // Deliberately NOT trimmed. The name is matched against the permitted set and
+  // then used downstream to load the role file, so accepting " scout " here
+  // would pass the whitelist and then miss agents/scout.md, leaving the child
+  // with no role, no tool restriction and every extension — the exact
+  // escalation this guard exists to prevent. A padded name is not a known agent.
+  const agent = request.agent;
 
   if (agent && env.currentAgent && agent === env.currentAgent) {
     return { status: "self-spawn", agent: env.currentAgent };
@@ -70,12 +78,13 @@ export function refuseSpawn(request: SpawnRequest, env: SpawnEnvironment): Spawn
   const permitted = env.permitted();
   if (!agent) return { status: "agent-required", permitted };
   if (!permitted.includes(agent)) {
-    return { status: "unknown-agent", agent, permitted, restricted: env.restricted };
+    const status = env.restricted ? "not-in-allowlist" : "unknown-agent";
+    return { status, agent, permitted };
   }
 
   if (request.name?.trim() === PARENT) return { status: "reserved-name" };
 
-  if (!env.muxAvailable()) return { status: "no-mux", setupHint: env.setupHint() };
+  if (!env.muxAvailable()) return { status: "no-mux", message: env.muxUnavailableMessage() };
   // Needed to derive the artifact dir that hosts this session's name registry.
   if (!env.hasSessionFile()) return { status: "no-session-file" };
 
@@ -86,9 +95,10 @@ export function refuseSpawn(request: SpawnRequest, env: SpawnEnvironment): Spawn
  * The refusal as the orchestrator sees it: `text` is what it reads, `error` is
  * the stable slug recorded in the tool result's details.
  *
- * The explicit return type is load-bearing, not decoration: it is what makes an
- * unhandled variant a compile error (TS2366) rather than a silently inferred
- * `| undefined`. Adding a refusal without describing it must not build.
+ * The explicit return type is load-bearing, not decoration. Without it an
+ * unhandled variant infers `| undefined`, which still fails the build — but at
+ * whichever call site destructures the result (TS2339), not here. Annotating
+ * keeps the error on the switch that is actually missing a case.
  */
 export function describeRefusal(refusal: SpawnRefusal): { text: string; error: string } {
   switch (refusal.status) {
@@ -108,13 +118,20 @@ export function describeRefusal(refusal: SpawnRefusal): { text: string; error: s
         error: "agent required",
       };
 
+    case "not-in-allowlist":
+      return {
+        text:
+          `You may not spawn the "${refusal.agent}" agent — it is not ` +
+          `in your allowlist. Available agents: ${listOf(refusal.permitted)}.`,
+        error: "agent not in allowlist",
+      };
+
     case "unknown-agent":
       return {
         text:
           `You may not spawn the "${refusal.agent}" agent — it is not ` +
-          `${refusal.restricted ? "in your allowlist" : "a known agent"}. ` +
-          `Available agents: ${listOf(refusal.permitted)}.`,
-        error: refusal.restricted ? "agent not in allowlist" : "unknown agent",
+          `a known agent. Available agents: ${listOf(refusal.permitted)}.`,
+        error: "unknown agent",
       };
 
     case "reserved-name":
@@ -126,10 +143,7 @@ export function describeRefusal(refusal: SpawnRefusal): { text: string; error: s
       };
 
     case "no-mux":
-      return {
-        text: `Subagents require tmux. ${refusal.setupHint}`,
-        error: "tmux not available",
-      };
+      return { text: refusal.message, error: "tmux not available" };
 
     case "no-session-file":
       return {

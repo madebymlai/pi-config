@@ -55,6 +55,15 @@ export function muxSetupHint(): string {
   return "Start pi inside tmux (`tmux new -A -s pi 'pi'`).";
 }
 
+/**
+ * The one sentence shown whenever something needs tmux and it is not there.
+ * Both the spawn refusal and send_message's transport failure quote it, so it
+ * is written once rather than reassembled at each site.
+ */
+export function muxUnavailableMessage(): string {
+  return `Subagents require tmux. ${muxSetupHint()}`;
+}
+
 function requireTmux(): void {
   if (!isTmuxAvailable()) {
     throw new Error(`tmux is required for subagents. ${muxSetupHint()}`);

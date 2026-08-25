@@ -32,7 +32,7 @@ import {
 } from "./agents.ts";
 import {
   isMuxAvailable,
-  muxSetupHint,
+  muxUnavailableMessage,
   createSurface,
   sendCommand,
   sendLongCommand,
@@ -185,9 +185,9 @@ function getShellReadyDelayMs(): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 500;
 }
 
-/** The same refusal, shaped for send_message's delivery outcomes. */
+/** The same refusal as the spawn guard's, shaped for send_message's outcomes. */
 function muxUnavailableDelivery(): Delivery {
-  return { status: "transport-failed", reason: `Subagents require tmux. ${muxSetupHint()}` };
+  return { status: "transport-failed", reason: muxUnavailableMessage() };
 }
 
 /**
@@ -1134,7 +1134,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           restricted: !!SUBAGENT_ALLOWLIST,
           muxAvailable: isMuxAvailable,
           hasSessionFile: () => !!ctx.sessionManager.getSessionFile(),
-          setupHint: muxSetupHint,
+          muxUnavailableMessage,
         });
         if (refusal) {
           const { text, error } = describeRefusal(refusal);
