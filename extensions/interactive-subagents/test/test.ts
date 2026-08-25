@@ -35,17 +35,13 @@ import {
 
 import { shellEscape } from "../tmux.ts";
 import {
-  advanceStatusState,
   capStatusLines,
-  classifyStatus,
-  createStatusState,
-  forceStatusAfterInterrupt,
   formatStatusAggregate,
   formatStatusLine,
   formatTransitionLine,
-  observeStatus,
   loadStatusConfig,
   parseStatusConfig,
+  type StatusSnapshot,
 } from "../status.ts";
 import {
   createSubagentActivityRecorder,
@@ -488,6 +484,28 @@ describe("session.ts", () => {
 });
 
 describe("status.ts", () => {
+  /**
+   * Formatting takes a StatusSnapshot and returns a string. Building the snapshot
+   * by hand keeps these tests on status.ts rather than dragging in the machine
+   * that happens to produce one in production.
+   */
+  const snapshot = (over: Partial<StatusSnapshot>): StatusSnapshot => ({
+    kind: "starting",
+    elapsedMs: 0,
+    elapsedText: "0s",
+    activeSinceMs: null,
+    activeDurationText: null,
+    activeScope: null,
+    waitingSinceMs: null,
+    waitingDurationText: null,
+    latestEvent: null,
+    activityLabel: null,
+    snapshotState: "present",
+    snapshotError: null,
+    snapshotProblemText: null,
+    statusLabel: null,
+    ...over,
+  });
   it("parses strict config objects", () => {
     const disabled = parseStatusConfig({ status: { enabled: false } });
 
@@ -573,255 +591,17 @@ describe("status.ts", () => {
     });
   });
 
-  it("keeps a missing snapshot as starting until the fixed watchdog threshold", () => {
-    let state = createStatusState({ startTimeMs: 0 });
-    state = observeStatus(state, { snapshot: "missing" }, 1_000);
-
-    assert.equal(classifyStatus(state, 60_999).kind, "starting");
-    const stalled = classifyStatus(state, 61_000);
-    assert.equal(stalled.kind, "stalled");
-    assert.equal(stalled.statusLabel, null);
-  });
-
-  it("classifies active snapshots without aging into stalled", () => {
-    let state = createStatusState({ startTimeMs: 0 });
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 5_000,
-      sequence: 1,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 5_000,
-      activityLabel: "bash",
-      latestEvent: "tool_execution_start",
-    }, 5_000);
-
-    const snapshot = classifyStatus(state, 240_000);
-    assert.equal(snapshot.kind, "active");
-    assert.equal(snapshot.activityLabel, "bash");
-    assert.equal(snapshot.activeDurationText, "3m");
-  });
-
-  it("classifies waiting snapshots as healthy idle without becoming stalled", () => {
-    let state = createStatusState({ startTimeMs: 0 });
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 10_000,
-      sequence: 1,
-      phase: "waiting",
-      waitingSince: 10_000,
-      latestEvent: "agent_end",
-    }, 10_000);
-
-    const snapshot = classifyStatus(state, 240_000);
-    assert.equal(snapshot.kind, "waiting");
-    assert.equal(snapshot.waitingDurationText, "3m");
-  });
-
-  it("detects stalled transitions and recovery", () => {
-    let state = createStatusState({ startTimeMs: 0 });
-    state = observeStatus(state, { snapshot: "missing" }, 1_000);
-
-    let advanced = advanceStatusState(state, 95_000);
-    assert.equal(advanced.transition, "stalled");
-    assert.equal(advanced.snapshot.kind, "stalled");
-
-    state = observeStatus(advanced.nextState, {
-      snapshot: "present",
-      updatedAt: 96_000,
-      sequence: 1,
-      phase: "waiting",
-      waitingSince: 96_000,
-      latestEvent: "agent_end",
-    }, 96_000);
-    advanced = advanceStatusState(state, 97_000);
-    assert.equal(advanced.transition, "recovered");
-    assert.equal(advanced.snapshot.kind, "waiting");
-  });
-
-  it("keeps the last healthy kind during transient snapshot loss", () => {
-    let state = createStatusState({ startTimeMs: 0 });
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 5_000,
-      sequence: 1,
-      phase: "active",
-      active: true,
-      activeScope: "streaming",
-      activeSince: 5_000,
-    }, 5_000);
-    state = advanceStatusState(state, 6_000).nextState;
-    state = observeStatus(state, { snapshot: "missing" }, 10_000);
-
-    const snapshot = classifyStatus(state, 20_000);
-    assert.equal(snapshot.kind, "active");
-    assert.equal(snapshot.statusLabel, null);
-  });
-
-  it("forces an active state to waiting after interrupt", () => {
-    const now = 20_000;
-    let state = createStatusState({ startTimeMs: 0 });
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 5_000,
-      sequence: 1,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 5_000,
-      activityLabel: "bash",
-    }, 5_000);
-
-    assert.equal(classifyStatus(state, now).kind, "active");
-
-    const forced = forceStatusAfterInterrupt(state, now);
-    const snapshot = classifyStatus(forced, now);
-
-    assert.equal(snapshot.kind, "waiting");
-    assert.equal(snapshot.activityLabel, "interrupted");
-    assert.equal(snapshot.waitingDurationText, "0s");
-    assert.equal(forced.activeNow, false);
-  });
-
-  it("orders same-millisecond snapshots by sequence", () => {
-    let state = createStatusState({ startTimeMs: 0 });
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 10_000,
-      sequence: 2,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 10_000,
-      activityLabel: "bash",
-    }, 10_000);
-
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 10_000,
-      sequence: 3,
-      phase: "waiting",
-      waitingSince: 10_000,
-      latestEvent: "agent_end",
-    }, 10_001);
-
-    const snapshot = classifyStatus(state, 11_000);
-    assert.equal(snapshot.kind, "waiting");
-    assert.equal(snapshot.latestEvent, "agent_end");
-  });
-
-  it("recovers from a transient snapshot read failure with the same valid snapshot", () => {
-    let state = createStatusState({ startTimeMs: 0 });
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 5_000,
-      sequence: 2,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 5_000,
-      activityLabel: "bash",
-    }, 5_000);
-    state = observeStatus(state, { snapshot: "missing" }, 10_000);
-    assert.equal(classifyStatus(state, 10_000).statusLabel, null);
-
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 5_000,
-      sequence: 2,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 5_000,
-      activityLabel: "bash",
-    }, 11_000);
-
-    const snapshot = classifyStatus(state, 11_000);
-    assert.equal(snapshot.kind, "active");
-    assert.equal(snapshot.statusLabel, null);
-  });
-
-  it("ignores stale and exact old snapshots after interrupt and accepts newer snapshots", () => {
-    let state = createStatusState({ startTimeMs: 0 });
-    state = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 5_000,
-      sequence: 1,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 5_000,
-      activityLabel: "bash",
-    }, 5_000);
-    state = forceStatusAfterInterrupt(state, 20_000);
-
-    const stale = observeStatus(state, {
-      snapshot: "present",
-      updatedAt: 5_000,
-      sequence: 1,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 5_000,
-      activityLabel: "bash",
-    }, 21_000);
-    let snapshot = classifyStatus(stale, 21_000);
-    assert.equal(snapshot.kind, "waiting");
-    assert.equal(snapshot.activityLabel, "interrupted");
-
-    const sameTimestamp = observeStatus(stale, {
-      snapshot: "present",
-      updatedAt: 20_000,
-      sequence: 1,
-      phase: "active",
-      active: true,
-      activeScope: "tool",
-      activeSince: 20_000,
-      activityLabel: "bash",
-    }, 22_000);
-    snapshot = classifyStatus(sameTimestamp, 22_000);
-    assert.equal(snapshot.kind, "waiting");
-    assert.equal(snapshot.activityLabel, "interrupted");
-
-    const resumed = observeStatus(sameTimestamp, {
-      snapshot: "present",
-      sequence: 2,
-      updatedAt: 25_000,
-      phase: "active",
-      active: true,
-      activeScope: "streaming",
-      activeSince: 25_000,
-      activityLabel: "streaming",
-    }, 25_000);
-    snapshot = classifyStatus(resumed, 25_000);
-    assert.equal(snapshot.kind, "active");
-    assert.equal(resumed.activeScope, "streaming");
-  });
-
   it("normalizes and truncates long newline-heavy names", () => {
     const longName = `Worker\n\n${"very-long-name-".repeat(12)}`;
-    const stalledState = observeStatus(
-      createStatusState({ startTimeMs: 0 }),
-      { snapshot: "missing" },
-      1_000,
+    const line = formatStatusLine(
+      longName,
+      snapshot({ kind: "stalled", elapsedText: "4m", snapshotProblemText: "3m" }),
     );
-    const activeState = observeStatus(
-      createStatusState({ startTimeMs: 0 }),
-      {
-        snapshot: "present",
-        updatedAt: 299_000,
-        sequence: 1,
-        phase: "active",
-        active: true,
-        activeScope: "tool",
-        activeSince: 299_000,
-        activityLabel: "write",
-      },
-      299_000,
+    const recovered = formatTransitionLine(
+      longName,
+      snapshot({ kind: "active", elapsedText: "5m", activityLabel: "write", activeDurationText: "1s" }),
+      "recovered",
     );
-    const line = formatStatusLine(longName, classifyStatus(stalledState, 240_000));
-    const recovered = formatTransitionLine(longName, classifyStatus(activeState, 300_000), "recovered");
 
     assert.doesNotMatch(line, /\n/);
     assert.doesNotMatch(recovered, /\n/);
@@ -830,27 +610,15 @@ describe("status.ts", () => {
   });
 
   it("caps visible status lines and reports overflow consistently", () => {
-    const waitingState = observeStatus(
-      createStatusState({ startTimeMs: 0 }),
-      { snapshot: "present", updatedAt: 180_000, sequence: 1, phase: "waiting", waitingSince: 180_000 },
-      180_000,
+    const waitingLine = formatStatusLine(
+      "Worker",
+      snapshot({ kind: "waiting", elapsedText: "5m", waitingDurationText: "2m" }),
     );
-    const activeState = observeStatus(
-      createStatusState({ startTimeMs: 0 }),
-      {
-        snapshot: "present",
-        updatedAt: 419_000,
-        sequence: 1,
-        phase: "active",
-        active: true,
-        activeScope: "tool",
-        activeSince: 419_000,
-        activityLabel: "bash",
-      },
-      419_000,
+    const recoveredLine = formatTransitionLine(
+      "Worker",
+      snapshot({ kind: "active", elapsedText: "7m", activityLabel: "bash", activeDurationText: "1s" }),
+      "recovered",
     );
-    const waitingLine = formatStatusLine("Worker", classifyStatus(waitingState, 300_000));
-    const recoveredLine = formatTransitionLine("Worker", classifyStatus(activeState, 420_000), "recovered");
     const lines = [waitingLine, recoveredLine, "Scout running 2m.", "Reviewer running 4m.", "Planner running 6m."];
     const capped = capStatusLines(lines, 3);
     const aggregate = formatStatusAggregate(lines, 3);

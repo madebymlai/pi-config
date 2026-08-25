@@ -3,9 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createLiveness } from "../liveness.ts";
-import { SNAPSHOT_STALLED_AFTER_MS } from "../status.ts";
-import { writeSubagentActivityFile } from "../activity.ts";
+import { createLiveness, SNAPSHOT_STALLED_AFTER_MS } from "../liveness.ts";
+import { writeSubagentActivityFile, type SubagentActivityState } from "../activity.ts";
 
 function withTempDir<T>(fn: (dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "liveness-"));
@@ -16,24 +15,30 @@ function withTempDir<T>(fn: (dir: string) => T): T {
   }
 }
 
-/** An activity snapshot saying the subagent is mid-`bash` as of `at`. */
-function activeAt(id: string, at: number) {
+/**
+ * An activity snapshot, defaulting to "mid-bash right now".
+ *
+ * The activity file is the only channel a subagent has for reporting itself, so
+ * every test here drives the machine the way the real thing does.
+ */
+function activity(over: Partial<SubagentActivityState> = {}): SubagentActivityState {
   return {
     version: 1,
-    runningChildId: id,
+    runningChildId: "child-1",
     createdAt: 0,
-    updatedAt: at,
+    updatedAt: 0,
     sequence: 1,
     latestEvent: "tool_execution_start",
     phase: "active",
-    activeScope: "tool",
-    activeSince: at,
-    toolName: "bash",
     agentActive: true,
     turnActive: true,
     providerActive: false,
     toolActive: true,
-  } as any;
+    activeScope: "tool",
+    activeSince: 0,
+    toolName: "bash",
+    ...over,
+  };
 }
 
 function makeLiveness(dir: string, opts: { interactive?: boolean; id?: string } = {}) {
@@ -41,6 +46,9 @@ function makeLiveness(dir: string, opts: { interactive?: boolean; id?: string } 
   const activityFile = join(dir, `activity-${id}.json`);
   return {
     activityFile,
+    write: (over: Partial<SubagentActivityState> = {}) =>
+      writeSubagentActivityFile(activityFile, activity({ runningChildId: id, ...over })),
+    remove: () => rmSync(activityFile, { force: true }),
     liveness: createLiveness({
       id,
       name: "Worker",
@@ -52,7 +60,7 @@ function makeLiveness(dir: string, opts: { interactive?: boolean; id?: string } 
 }
 
 describe("liveness.ts", () => {
-  describe("observe", () => {
+  describe("reading the activity file", () => {
     it("reports starting when no activity has been written yet", () => {
       withTempDir((dir) => {
         const { liveness } = makeLiveness(dir);
@@ -63,8 +71,8 @@ describe("liveness.ts", () => {
 
     it("picks up the tool a subagent is running", () => {
       withTempDir((dir) => {
-        const { liveness, activityFile } = makeLiveness(dir);
-        writeSubagentActivityFile(activityFile, activeAt("child-1", 5_000));
+        const { liveness, write } = makeLiveness(dir);
+        write({ updatedAt: 5_000, activeSince: 5_000 });
         liveness.observe(5_000);
 
         const snapshot = liveness.snapshot(5_000);
@@ -75,9 +83,9 @@ describe("liveness.ts", () => {
 
     it("ignores an activity file belonging to a different child", () => {
       withTempDir((dir) => {
-        const { liveness, activityFile } = makeLiveness(dir);
-        // Same path, someone else's id — a stale file from a previous run.
-        writeSubagentActivityFile(activityFile, activeAt("someone-else", 5_000));
+        const { liveness, write } = makeLiveness(dir);
+        // Same path, someone else's id: a stale file from a previous run.
+        write({ runningChildId: "someone-else", updatedAt: 5_000 });
         liveness.observe(5_000);
 
         assert.notEqual(liveness.snapshot(5_000).kind, "active");
@@ -94,17 +102,167 @@ describe("liveness.ts", () => {
     });
   });
 
+  describe("classification", () => {
+    it("keeps a missing snapshot as starting until the fixed watchdog threshold", () => {
+      withTempDir((dir) => {
+        const { liveness } = makeLiveness(dir);
+        liveness.observe(1_000);
+
+        assert.equal(liveness.snapshot(1_000 + SNAPSHOT_STALLED_AFTER_MS - 1).kind, "starting");
+        const stalled = liveness.snapshot(1_000 + SNAPSHOT_STALLED_AFTER_MS);
+        assert.equal(stalled.kind, "stalled");
+        assert.equal(stalled.statusLabel, null);
+      });
+    });
+
+    it("classifies active snapshots without aging into stalled", () => {
+      withTempDir((dir) => {
+        const { liveness, write } = makeLiveness(dir);
+        write({ updatedAt: 5_000, activeSince: 5_000 });
+        liveness.observe(5_000);
+
+        const snapshot = liveness.snapshot(240_000);
+        assert.equal(snapshot.kind, "active");
+        assert.equal(snapshot.activityLabel, "bash");
+        assert.equal(snapshot.activeDurationText, "3m");
+      });
+    });
+
+    it("classifies waiting snapshots as healthy idle without becoming stalled", () => {
+      withTempDir((dir) => {
+        const { liveness, write } = makeLiveness(dir);
+        write({
+          updatedAt: 10_000,
+          phase: "waiting",
+          waitingSince: 10_000,
+          latestEvent: "agent_end",
+          activeScope: undefined,
+          toolActive: false,
+          turnActive: false,
+        });
+        liveness.observe(10_000);
+
+        const snapshot = liveness.snapshot(240_000);
+        assert.equal(snapshot.kind, "waiting");
+        assert.equal(snapshot.waitingDurationText, "3m");
+      });
+    });
+
+    it("keeps the last healthy kind during transient snapshot loss", () => {
+      withTempDir((dir) => {
+        const { liveness, write, remove } = makeLiveness(dir);
+        write({ updatedAt: 5_000, activeScope: "streaming", activeSince: 5_000 });
+        liveness.tick(5_000);
+
+        remove();
+        liveness.observe(10_000);
+
+        const snapshot = liveness.snapshot(20_000);
+        assert.equal(snapshot.kind, "active", "a brief read failure must not erase what we knew");
+        assert.equal(snapshot.statusLabel, null);
+      });
+    });
+
+    it("recovers from a transient read failure when the same snapshot comes back", () => {
+      withTempDir((dir) => {
+        const { liveness, write, remove } = makeLiveness(dir);
+        const stable = { updatedAt: 5_000, sequence: 2, activeSince: 5_000 };
+        write(stable);
+        liveness.observe(5_000);
+
+        remove();
+        liveness.observe(10_000);
+        assert.equal(liveness.snapshot(10_000).statusLabel, null);
+
+        // Byte-identical to what we already folded in, so it must not be
+        // rejected as stale on its way back.
+        write(stable);
+        liveness.observe(11_000);
+
+        const snapshot = liveness.snapshot(11_000);
+        assert.equal(snapshot.kind, "active");
+        assert.equal(snapshot.statusLabel, null);
+      });
+    });
+  });
+
+  describe("ordering", () => {
+    it("orders same-millisecond snapshots by sequence", () => {
+      withTempDir((dir) => {
+        const { liveness, write } = makeLiveness(dir);
+        write({ updatedAt: 10_000, sequence: 2, activeSince: 10_000 });
+        liveness.observe(10_000);
+
+        write({
+          updatedAt: 10_000,
+          sequence: 3,
+          phase: "waiting",
+          waitingSince: 10_000,
+          latestEvent: "agent_end",
+          activeScope: undefined,
+          toolActive: false,
+        });
+        liveness.observe(10_001);
+
+        const snapshot = liveness.snapshot(11_000);
+        assert.equal(snapshot.kind, "waiting");
+        assert.equal(snapshot.latestEvent, "agent_end");
+      });
+    });
+  });
+
   describe("interrupted", () => {
     it("moves an active subagent to waiting", () => {
       withTempDir((dir) => {
-        const { liveness, activityFile } = makeLiveness(dir);
-        writeSubagentActivityFile(activityFile, activeAt("child-1", 5_000));
+        const { liveness, write } = makeLiveness(dir);
+        write({ updatedAt: 5_000, activeSince: 5_000 });
         liveness.observe(5_000);
-        assert.equal(liveness.snapshot(5_000).kind, "active");
+        assert.equal(liveness.snapshot(20_000).kind, "active");
 
         liveness.interrupted(20_000);
 
-        assert.equal(liveness.snapshot(20_000).kind, "waiting");
+        const snapshot = liveness.snapshot(20_000);
+        assert.equal(snapshot.kind, "waiting");
+        assert.equal(snapshot.activityLabel, "interrupted");
+        assert.equal(snapshot.waitingDurationText, "0s");
+        assert.equal(snapshot.activeScope, null);
+        assert.equal(snapshot.activeSinceMs, null);
+      });
+    });
+
+    it("ignores stale and same-timestamp snapshots afterwards, but accepts newer ones", () => {
+      withTempDir((dir) => {
+        const { liveness, write } = makeLiveness(dir);
+        const before = { updatedAt: 5_000, sequence: 1, activeSince: 5_000 };
+        write(before);
+        liveness.observe(5_000);
+        liveness.interrupted(20_000);
+
+        // In flight when we interrupted: older than the override, so it loses.
+        write(before);
+        liveness.observe(21_000);
+        assert.equal(liveness.snapshot(21_000).kind, "waiting");
+        assert.equal(liveness.snapshot(21_000).activityLabel, "interrupted");
+
+        // Exactly the override timestamp at the same sequence: still loses.
+        write({ updatedAt: 20_000, sequence: 1, activeSince: 20_000 });
+        liveness.observe(22_000);
+        assert.equal(liveness.snapshot(22_000).kind, "waiting");
+        assert.equal(liveness.snapshot(22_000).activityLabel, "interrupted");
+
+        // Genuinely newer: the subagent has picked the work back up.
+        write({
+          updatedAt: 25_000,
+          sequence: 2,
+          activeScope: "streaming",
+          activeSince: 25_000,
+          toolName: undefined,
+        });
+        liveness.observe(25_000);
+
+        const snapshot = liveness.snapshot(25_000);
+        assert.equal(snapshot.kind, "active");
+        assert.equal(snapshot.activeScope, "streaming");
       });
     });
   });
@@ -120,10 +278,10 @@ describe("liveness.ts", () => {
 
     it("flags a kind change so the widget can repaint", () => {
       withTempDir((dir) => {
-        const { liveness, activityFile } = makeLiveness(dir);
+        const { liveness, write } = makeLiveness(dir);
         liveness.tick(1_000); // starting
 
-        writeSubagentActivityFile(activityFile, activeAt("child-1", 2_000));
+        write({ updatedAt: 2_000, activeSince: 2_000 });
         assert.equal(liveness.tick(2_000).kindChanged, true);
         assert.equal(liveness.tick(2_100).kindChanged, false, "already active");
       });
@@ -136,14 +294,35 @@ describe("liveness.ts", () => {
 
         const stalled = liveness.tick(SNAPSHOT_STALLED_AFTER_MS + 2_000);
         assert.ok(stalled.transition, "expected a stalled transition line");
-        assert.match(stalled.transition!, /Worker/);
-        assert.match(stalled.transition!, /stalled/i);
+        assert.match(stalled.transition, /Worker/);
+        assert.match(stalled.transition, /stalled/i);
 
         assert.equal(
           liveness.tick(SNAPSHOT_STALLED_AFTER_MS + 3_000).transition,
           null,
           "a transition fires once, not on every tick",
         );
+      });
+    });
+
+    it("announces recovery once the subagent reports again", () => {
+      withTempDir((dir) => {
+        const { liveness, write } = makeLiveness(dir);
+        liveness.tick(1_000);
+        assert.match(liveness.tick(95_000).transition ?? "", /stalled/i);
+
+        write({
+          updatedAt: 96_000,
+          phase: "waiting",
+          waitingSince: 96_000,
+          latestEvent: "agent_end",
+          activeScope: undefined,
+          toolActive: false,
+        });
+
+        const recovered = liveness.tick(97_000);
+        assert.match(recovered.transition ?? "", /recovered/i);
+        assert.equal(liveness.snapshot(97_000).kind, "waiting");
       });
     });
 

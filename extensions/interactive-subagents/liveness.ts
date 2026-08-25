@@ -1,16 +1,16 @@
 /**
  * How a running subagent is doing, and nothing else about it.
  *
- * Before this module the status state was a mutable field on RunningSubagent
- * poked from five places. Each one had to know which of status.ts's functions
- * applied, and — the part that bites — that every one of them returns a NEW
- * state you must assign back. Forgetting the assignment loses the observation
- * silently, and there is nothing in the type system to catch it.
+ * This module owns the status machine outright: the state type, the observation
+ * fold, and the classification all live below as module-private code, and no
+ * state value is exported. That is deliberate. While the state was an exported
+ * record, `{ ...state, currentKind: "active" }` was a thing any caller could
+ * write; the module itself did exactly that in the interrupt path, and nothing
+ * would have stopped a caller copying it. Now the state cannot leave here, and
+ * the only way in is the four verbs on SubagentLiveness.
  *
- * The four verbs below are what those five callers actually wanted. Behind them
- * sit the activity file, the ten-field observation mapping, four status.ts
- * functions, and the assign-back discipline. A caller learns the verbs; it does
- * not learn that any of that exists.
+ * status.ts keeps what is genuinely shared: the snapshot value type the widget
+ * renders, the line formatting, and config loading. It has no state of its own.
  *
  * `interactive` lives in here too, because it is a liveness policy: it decides
  * only whether a transition is worth waking the parent for, and no caller
@@ -23,15 +23,296 @@ import {
   type SubagentActivityState,
 } from "./activity.ts";
 import {
-  advanceStatusState,
-  classifyStatus,
-  createStatusState,
-  forceStatusAfterInterrupt,
+  formatElapsedDuration,
   formatTransitionLine,
-  observeStatus,
+  SUBAGENT_STATUS_KINDS,
+  type StatusActivityPhase,
   type StatusSnapshot,
-  type SubagentStatusState,
+  type StatusSnapshotState,
+  type SubagentStatusKind,
+  type SubagentStatusTransition,
 } from "./status.ts";
+
+/** How long without a healthy snapshot before a subagent counts as stalled. */
+export const SNAPSHOT_STALLED_AFTER_MS = 60_000;
+
+type StatusObservation =
+  | {
+      snapshot: "present";
+      updatedAt: number;
+      sequence: number;
+      phase: StatusActivityPhase;
+      active?: boolean;
+      activeScope?: string;
+      activeSince?: number;
+      waitingSince?: number;
+      latestEvent?: string;
+      activityLabel?: string;
+    }
+  | {
+      snapshot: "missing" | "invalid" | "wrong-id";
+      snapshotError?: string;
+    };
+
+interface SubagentStatusState {
+  startTimeMs: number;
+  firstObservationAtMs: number | null;
+  lastActivityAtMs: number | null;
+  lastActivitySequence: number | null;
+  localOverrideAtMs: number | null;
+  localOverrideSequence: number | null;
+  activeNow: boolean;
+  activeSinceMs: number | null;
+  activeScope: string | null;
+  waitingSinceMs: number | null;
+  phase: StatusActivityPhase | null;
+  latestEvent: string | null;
+  activityLabel: string | null;
+  snapshotState: StatusSnapshotState;
+  snapshotProblemSinceMs: number | null;
+  snapshotError: string | null;
+  /** Written only by transitionTo. See the note there. */
+  readonly currentKind: SubagentStatusKind;
+}
+
+function snapshotProblemLabel(snapshotState: StatusSnapshotState): string | null {
+  if (snapshotState === "wrong-id") return "wrong activity id";
+  return null;
+}
+
+/**
+ * The only transition. Apart from createStatusState establishing S0, this is the
+ * one place currentKind is ever written, and since the state type does not leave
+ * this module there is no way to route around it.
+ *
+ * There is deliberately no adjacency check here. The transition relation was
+ * measured (test/reachability.test.ts) and it is complete: every kind can legally
+ * follow every kind, so a table of legal pairs would forbid nothing while adding
+ * a second place to keep in sync. Reachability is the property worth enforcing;
+ * adjacency is not.
+ */
+function transitionTo(state: SubagentStatusState, kind: SubagentStatusKind): SubagentStatusState {
+  return kind === state.currentKind ? state : { ...state, currentKind: kind };
+}
+
+function createStatusState(params: { startTimeMs: number }): SubagentStatusState {
+  return {
+    startTimeMs: params.startTimeMs,
+    firstObservationAtMs: null,
+    lastActivityAtMs: null,
+    lastActivitySequence: null,
+    localOverrideAtMs: null,
+    localOverrideSequence: null,
+    activeNow: false,
+    activeSinceMs: null,
+    activeScope: null,
+    waitingSinceMs: null,
+    phase: null,
+    latestEvent: null,
+    activityLabel: null,
+    snapshotState: "unseen",
+    snapshotProblemSinceMs: null,
+    snapshotError: null,
+    // S0, taken from the declared node list rather than repeated as a literal.
+    currentKind: SUBAGENT_STATUS_KINDS[0],
+  };
+}
+
+function observeStatus(
+  state: SubagentStatusState,
+  observation: StatusObservation,
+  now: number,
+): SubagentStatusState {
+  if (observation.snapshot !== "present") {
+    return {
+      ...state,
+      firstObservationAtMs: state.firstObservationAtMs ?? now,
+      snapshotState: observation.snapshot,
+      snapshotProblemSinceMs: state.snapshotProblemSinceMs ?? now,
+      snapshotError: observation.snapshotError ?? null,
+    };
+  }
+
+  const updatedAt = observation.updatedAt;
+  const sequence = observation.sequence;
+  const lastActivityAtMs = state.lastActivityAtMs;
+  const lastActivitySequence = state.lastActivitySequence;
+  const olderThanLastActivity = lastActivityAtMs != null && (
+    updatedAt < lastActivityAtMs ||
+    (updatedAt === lastActivityAtMs && lastActivitySequence != null && sequence < lastActivitySequence)
+  );
+  if (olderThanLastActivity) return state;
+
+  const blockedByLocalOverride = state.localOverrideAtMs != null && (
+    updatedAt < state.localOverrideAtMs ||
+    (updatedAt === state.localOverrideAtMs && state.localOverrideSequence != null && sequence <= state.localOverrideSequence)
+  );
+  if (blockedByLocalOverride) return state;
+
+  const phase = observation.phase;
+  const activeNow = phase === "active" || observation.active === true;
+  const activeSinceMs = activeNow
+    ? observation.activeSince ?? state.activeSinceMs ?? updatedAt
+    : null;
+  const waitingSinceMs = phase === "waiting"
+    ? observation.waitingSince ?? state.waitingSinceMs ?? updatedAt
+    : null;
+
+  return {
+    ...state,
+    firstObservationAtMs: state.firstObservationAtMs ?? now,
+    lastActivityAtMs: updatedAt,
+    lastActivitySequence: sequence,
+    activeNow,
+    activeSinceMs,
+    activeScope: activeNow ? observation.activeScope ?? null : null,
+    waitingSinceMs,
+    phase,
+    latestEvent: observation.latestEvent ?? null,
+    activityLabel: observation.activityLabel ?? null,
+    snapshotState: "present",
+    snapshotProblemSinceMs: null,
+    snapshotError: null,
+    localOverrideAtMs: null,
+    localOverrideSequence: null,
+  };
+}
+
+/**
+ * The parent just steered this subagent, so it is waiting on the parent by
+ * definition rather than by observation.
+ *
+ * This is a real transition to "waiting", but a self-inflicted one, so it must
+ * not be reported back to the parent as news. That falls out structurally: only
+ * advanceStatusState returns transitions, and this path rebaselines the machine
+ * without going through it. Skipping the rebaseline instead would make the next
+ * tick announce a "recovered" that the parent itself caused.
+ */
+function forceStatusAfterInterrupt(state: SubagentStatusState, now: number): SubagentStatusState {
+  const interrupted: SubagentStatusState = {
+    ...state,
+    firstObservationAtMs: state.firstObservationAtMs ?? now,
+    lastActivityAtMs: now,
+    localOverrideAtMs: now,
+    localOverrideSequence: state.lastActivitySequence,
+    activeNow: false,
+    activeSinceMs: null,
+    activeScope: null,
+    waitingSinceMs: now,
+    phase: "waiting",
+    latestEvent: "interrupt_requested",
+    activityLabel: "interrupted",
+    snapshotState: "present",
+    snapshotProblemSinceMs: null,
+    snapshotError: null,
+  };
+
+  return transitionTo(interrupted, "waiting");
+}
+
+function classifyProblemState(state: SubagentStatusState, now: number): Pick<StatusSnapshot, "kind" | "statusLabel"> {
+  const problemLabel = snapshotProblemLabel(state.snapshotState);
+  const hasValidSnapshot = state.lastActivityAtMs != null;
+
+  if (!hasValidSnapshot) {
+    const referenceMs = state.firstObservationAtMs ?? state.startTimeMs;
+    const elapsedMs = Math.max(0, now - referenceMs);
+    return elapsedMs >= SNAPSHOT_STALLED_AFTER_MS
+      ? { kind: "stalled", statusLabel: problemLabel }
+      : { kind: "starting", statusLabel: null };
+  }
+
+  const problemSinceMs = state.snapshotProblemSinceMs ?? now;
+  const problemMs = Math.max(0, now - problemSinceMs);
+  if (problemMs >= SNAPSHOT_STALLED_AFTER_MS) return { kind: "stalled", statusLabel: problemLabel };
+
+  const lastHealthyKind = state.activeNow
+    ? "active"
+    : state.waitingSinceMs != null || state.phase === "done"
+      ? "waiting"
+      : state.currentKind === "stalled"
+        ? "starting"
+        : state.currentKind;
+  return { kind: lastHealthyKind, statusLabel: problemLabel };
+}
+
+function classifyStatus(state: SubagentStatusState, now: number): StatusSnapshot {
+  const elapsedMs = Math.max(0, now - state.startTimeMs);
+  const elapsedText = formatElapsedDuration(elapsedMs);
+
+  let kind: SubagentStatusKind;
+  let statusLabel: string | null = null;
+
+  if (state.snapshotState === "present") {
+    if (state.phase === "active" || state.activeNow) {
+      kind = "active";
+    } else if (state.phase === "waiting") {
+      kind = "waiting";
+    } else if (state.phase === "done") {
+      kind = "waiting";
+      statusLabel = "done";
+    } else {
+      const referenceMs = state.firstObservationAtMs ?? state.startTimeMs;
+      const elapsedSinceObservationMs = Math.max(0, now - referenceMs);
+      kind = elapsedSinceObservationMs >= SNAPSHOT_STALLED_AFTER_MS ? "stalled" : "starting";
+      statusLabel = null;
+    }
+  } else {
+    const classified = classifyProblemState(state, now);
+    kind = classified.kind;
+    statusLabel = classified.statusLabel;
+  }
+
+  const activeDurationText = state.activeSinceMs == null
+    ? null
+    : formatElapsedDuration(now - state.activeSinceMs);
+  const waitingDurationText = state.waitingSinceMs == null
+    ? null
+    : formatElapsedDuration(now - state.waitingSinceMs);
+  const snapshotProblemText = state.snapshotProblemSinceMs == null
+    ? null
+    : formatElapsedDuration(now - state.snapshotProblemSinceMs);
+
+  return {
+    kind,
+    elapsedMs,
+    elapsedText,
+    activeSinceMs: state.activeSinceMs,
+    activeDurationText,
+    activeScope: state.activeScope,
+    waitingSinceMs: state.waitingSinceMs,
+    waitingDurationText,
+    latestEvent: state.latestEvent,
+    activityLabel: state.activityLabel,
+    snapshotState: state.snapshotState,
+    snapshotError: state.snapshotError,
+    snapshotProblemText,
+    statusLabel,
+  };
+}
+
+function advanceStatusState(
+  state: SubagentStatusState,
+  now: number,
+): {
+  nextState: SubagentStatusState;
+  snapshot: StatusSnapshot;
+  transition: SubagentStatusTransition;
+} {
+  const snapshot = classifyStatus(state, now);
+  const transition =
+    state.currentKind !== "stalled" && snapshot.kind === "stalled"
+      ? "stalled"
+      : state.currentKind === "stalled" && (snapshot.kind === "active" || snapshot.kind === "waiting")
+        ? "recovered"
+        : null;
+
+  return {
+    snapshot,
+    transition,
+    nextState: transitionTo(state, snapshot.kind),
+  };
+}
 
 export interface SubagentLiveness {
   /** Fold in the latest activity snapshot. Cheap; safe to call every tick. */

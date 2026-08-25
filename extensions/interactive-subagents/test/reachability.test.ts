@@ -1,118 +1,171 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import {
-  advanceStatusState,
-  classifyStatus,
-  createStatusState,
-  forceStatusAfterInterrupt,
-  observeStatus,
-  SUBAGENT_STATUS_KINDS,
-  SUBAGENT_STATUS_TRANSITIONS,
-  type StatusObservation,
-  type SubagentStatusState,
-} from "../status.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createLiveness, SNAPSHOT_STALLED_AFTER_MS } from "../liveness.ts";
+import { SUBAGENT_STATUS_KINDS, SUBAGENT_STATUS_TRANSITIONS } from "../status.ts";
+import { writeSubagentActivityFile, type SubagentActivityState } from "../activity.ts";
 
 /**
  * Reachability analysis over the status machine.
  *
- * A declared node the code can never produce is dead weight that still has to be
- * rendered, tested and reasoned about at every call site. Nothing catches that by
- * reading the code, because the dead node looks exactly like a live one. So this
- * explores the state space from S0 and asserts every declared node and transition
- * actually shows up.
+ * A declared node nothing can produce is dead weight that still has to be
+ * rendered, tested and reasoned about at every call site, and reading the code
+ * will not find it: a dead node looks exactly like a live one. So this drives
+ * the machine over every short sequence of inputs and asserts that each declared
+ * node and transition actually shows up.
+ *
+ * It drives through the activity file rather than poking state, because that is
+ * the only channel a real subagent has. A node reachable only via some state
+ * shape the recorder can never write is still dead in practice, and this way the
+ * test cannot claim otherwise.
  *
  * A stricter adjacency model was considered and rejected on measurement: the
- * relation here is complete (every kind can legally follow every kind), so a
- * transition table would forbid nothing. Reachability is the half that pays.
+ * relation here is complete, so a table of legal pairs would forbid nothing.
+ * Reachability is the half that pays.
  */
 
-/** Every observation shape the type admits. */
-const OBSERVATIONS: StatusObservation[] = [];
-for (const snapshot of ["missing", "invalid", "wrong-id"] as const) {
-  OBSERVATIONS.push({ snapshot });
+const CHILD_ID = "child-1";
+
+/** What the subagent's activity file says at a given step, including saying nothing. */
+type FileState = "absent" | "corrupt" | "wrong-id" | "starting" | "active" | "waiting" | "done";
+
+const FILE_STATES: FileState[] = ["absent", "corrupt", "wrong-id", "starting", "active", "waiting", "done"];
+
+/** Small stays under the watchdog; large crosses it. */
+const CLOCK_STEPS = [1_000, SNAPSHOT_STALLED_AFTER_MS + 1_000];
+
+interface Action {
+  file: FileState | null;
+  interrupt: boolean;
+  step: number;
 }
-for (const phase of ["starting", "active", "waiting", "done"] as const) {
-  for (const activeScope of ["tool", undefined]) {
-    for (const active of [true, false, undefined]) {
-      OBSERVATIONS.push({ snapshot: "present", updatedAt: 0, sequence: 0, phase, activeScope, active });
-    }
+
+const ACTIONS: Action[] = [
+  ...FILE_STATES.flatMap((file) => CLOCK_STEPS.map((step) => ({ file, interrupt: false, step }))),
+  ...CLOCK_STEPS.map((step) => ({ file: null, interrupt: true, step })),
+];
+
+function activityFor(state: FileState, at: number, sequence: number): SubagentActivityState {
+  const base = {
+    version: 1,
+    runningChildId: state === "wrong-id" ? "someone-else" : CHILD_ID,
+    createdAt: 0,
+    updatedAt: at,
+    sequence,
+    agentActive: true,
+    turnActive: state === "active",
+    providerActive: false,
+    toolActive: state === "active",
+  } as const;
+
+  if (state === "active") {
+    return { ...base, phase: "active", latestEvent: "tool_execution_start", activeScope: "tool", activeSince: at, toolName: "bash" };
   }
+  if (state === "waiting") {
+    return { ...base, phase: "waiting", latestEvent: "await_reply", waitingSince: at };
+  }
+  if (state === "done") {
+    return { ...base, phase: "done", latestEvent: "session_shutdown" };
+  }
+  return { ...base, phase: "starting", latestEvent: "session_start" };
 }
 
-/** Long enough to cross SNAPSHOT_STALLED_AFTER_MS, short enough to stay under it. */
-const CLOCK_STEPS = [0, 1_000, 61_000];
+/** Run one sequence on a fresh machine, reporting everything it produced. */
+function run(sequence: Action[], activityFile: string) {
+  const kinds: string[] = [];
+  const transitions: string[] = [];
+  const liveness = createLiveness({
+    id: CHILD_ID,
+    name: "Worker",
+    activityFile,
+    startTimeMs: 0,
+    interactive: false,
+  });
 
-/**
- * Collapse a state to what classification actually reads, so the walk terminates.
- * Timestamps would otherwise make the space infinite.
- */
-function abstractState(state: SubagentStatusState) {
-  return JSON.stringify([
-    state.currentKind,
-    state.phase,
-    state.snapshotState,
-    state.activeNow,
-    state.lastActivityAtMs != null,
-    state.waitingSinceMs != null,
-    state.snapshotProblemSinceMs != null,
-    state.localOverrideAtMs != null,
-  ]);
+  let now = 0;
+  let writes = 0;
+  for (const action of sequence) {
+    if (action.file === "absent") rmSync(activityFile, { force: true });
+    else if (action.file === "corrupt") writeFileSync(activityFile, "not json{", "utf8");
+    else if (action.file) writeSubagentActivityFile(activityFile, activityFor(action.file, now, ++writes));
+
+    now += action.step;
+
+    if (action.interrupt) {
+      liveness.interrupted(now);
+    } else {
+      const line = liveness.tick(now).transition;
+      // tick reports a formatted line; recover the transition it was built from.
+      if (line) transitions.push(/recovered/i.test(line) ? "recovered" : "stalled");
+    }
+    kinds.push(liveness.snapshot(now).kind);
+  }
+
+  return { kinds, transitions };
 }
 
-function explore() {
+function explore(maxLength: number) {
+  const dir = mkdtempSync(join(tmpdir(), "reachability-"));
+  const activityFile = join(dir, "activity.json");
   const kinds = new Set<string>();
   const transitions = new Set<string>();
-  const visited = new Set<string>();
-  let frontier = [{ state: createStatusState({ startTimeMs: 0 }), now: 0 }];
+  let sequences = 0;
 
-  for (let depth = 0; depth < 6 && frontier.length > 0; depth++) {
-    const next: typeof frontier = [];
-    for (const { state, now } of frontier) {
-      const key = abstractState(state);
-      if (visited.has(key)) continue;
-      visited.add(key);
-      kinds.add(classifyStatus(state, now).kind);
-
-      for (const step of CLOCK_STEPS) {
-        const at = now + step;
-        const advanced = advanceStatusState(state, at);
-        if (advanced.transition) transitions.add(advanced.transition);
-
-        next.push({ state: advanced.nextState, now: at });
-        next.push({ state: forceStatusAfterInterrupt(state, at), now: at });
-        for (const observation of OBSERVATIONS) {
-          const dated =
-            observation.snapshot === "present"
-              ? { ...observation, updatedAt: at, sequence: at }
-              : observation;
-          next.push({ state: observeStatus(state, dated, at), now: at });
+  try {
+    let frontier: Action[][] = [[]];
+    for (let length = 1; length <= maxLength; length++) {
+      const next: Action[][] = [];
+      for (const prefix of frontier) {
+        for (const action of ACTIONS) {
+          const sequence = [...prefix, action];
+          next.push(sequence);
+          sequences++;
+          const result = run(sequence, activityFile);
+          for (const kind of result.kinds) kinds.add(kind);
+          for (const transition of result.transitions) transitions.add(transition);
         }
       }
+      frontier = next;
     }
-    frontier = next;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 
-  return { kinds, transitions, visited: visited.size };
+  return { kinds, transitions, sequences };
 }
 
 describe("status machine reachability", () => {
-  const { kinds, transitions, visited } = explore();
+  const { kinds, transitions, sequences } = explore(3);
 
-  it("explores a non-trivial slice of the state space", () => {
-    assert.ok(visited > 100, `only ${visited} states explored; the walk stopped short`);
+  it("explores a non-trivial slice of the input space", () => {
+    assert.ok(sequences > 1_000, `only ${sequences} sequences run; the walk stopped short`);
   });
 
   it("starts at S0", () => {
-    assert.equal(createStatusState({ startTimeMs: 0 }).currentKind, SUBAGENT_STATUS_KINDS[0]);
+    const dir = mkdtempSync(join(tmpdir(), "reachability-s0-"));
+    try {
+      const liveness = createLiveness({
+        id: CHILD_ID,
+        name: "Worker",
+        activityFile: join(dir, "activity.json"),
+        startTimeMs: 0,
+        interactive: false,
+      });
+      assert.equal(liveness.snapshot(0).kind, SUBAGENT_STATUS_KINDS[0]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   for (const kind of SUBAGENT_STATUS_KINDS) {
     it(`can reach the ${kind} node`, () => {
       assert.ok(
         kinds.has(kind),
-        `"${kind}" is declared but nothing can produce it. Either it is dead and should ` +
-          `be removed from SUBAGENT_STATUS_KINDS and its render sites, or the observation ` +
-          `that produces it is missing from this walk.`,
+        `"${kind}" is declared but no sequence of activity-file states produces it. Either ` +
+          `it is dead and should be removed from SUBAGENT_STATUS_KINDS and its render sites, ` +
+          `or the input that produces it is missing from this walk.`,
       );
     });
   }
