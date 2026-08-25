@@ -1185,6 +1185,7 @@ function startWidgetRefresh() {
  * Call watchSubagent() on the returned object to observe completion.
  */
 async function launchSubagent(
+  pi: ExtensionAPI,
   params: Static<typeof SubagentParams> & { name: string },
   ctx: Pick<ExtensionContext, "sessionManager" | "cwd">,
   options?: { surface?: string },
@@ -1357,36 +1358,21 @@ async function launchSubagent(
   // This was already computed above so session placement, PI_CODING_AGENT_DIR, and cd agree.
   const cdPrefix = effectiveCwd ? `cd ${shellEscape(effectiveCwd)} && ` : "";
 
-  const piCommand = cdPrefix + envPrefix + parts.join(" ");
-  const command = `${piCommand}; echo '__SUBAGENT_DONE_'$?'__'`;
-  const launchScriptName = `${slugify(params.name || "subagent")}-${id}.sh`;
-  const launchScriptFile = join(artifactDir, "subagent-scripts", launchScriptName);
-  sendLongCommand(surface, command, {
-    scriptPath: launchScriptFile,
-    scriptPreamble: [
-      `# Subagent launch script for ${params.name}`,
-      `# Generated: ${new Date().toISOString()}`,
-      `# Session: ${subagentSessionFile}`,
-      `# Surface: ${surface}`,
-    ].join("\n"),
-  });
-
-  const running: RunningSubagent = {
+  return runSubagent(pi, {
     id,
     name: params.name,
     task: params.task,
     agent: params.agent,
     surface,
-    startTime,
     sessionFile: subagentSessionFile,
-    launchScriptFile,
+    artifactDir,
     activityFile,
     interactive: effectiveInteractive,
-    statusState: createStatusState({ startTimeMs: startTime }),
-  };
-
-  runningSubagents.set(id, running);
-  return running;
+    startTime,
+    command: cdPrefix + envPrefix + parts.join(" "),
+    kind: "launch",
+    fromEntry: 0,
+  });
 }
 
 /**
@@ -1436,9 +1422,124 @@ function deliverPendingQuestion(running: RunningSubagent): void {
   );
 }
 
+/**
+ * Everything that happens once a subagent's command line is decided: put it in
+ * the surface, register it for the widget, and supervise it to completion.
+ *
+ * Spawning and resuming differ only in the command they build and where their
+ * transcript starts. Before this existed the sequence below was written twice
+ * and had already drifted — the spawn path exported a PI_SUBAGENT_SURFACE the
+ * resume path did not, and nothing read it either way.
+ */
+interface SubagentRun {
+  id: string;
+  name: string;
+  task: string;
+  agent?: string;
+  surface: string;
+  sessionFile: string;
+  artifactDir: string;
+  activityFile: string;
+  interactive: boolean;
+  startTime: number;
+  /** The pi invocation. The completion echo the watcher looks for is added here. */
+  command: string;
+  /** Names the generated script and its preamble, and nothing else. */
+  kind: "launch" | "resume";
+  /** Passed to watchSubagent: a resumed run reports only the turns it added. */
+  fromEntry: number;
+}
+
+function runSubagent(pi: ExtensionAPI, run: SubagentRun): RunningSubagent {
+  const scriptSuffix = run.kind === "resume" ? `resume-${Date.now()}` : run.id;
+  const launchScriptFile = join(
+    run.artifactDir,
+    "subagent-scripts",
+    `${slugify(run.name, "subagent")}-${scriptSuffix}.sh`,
+  );
+
+  sendLongCommand(run.surface, `${run.command}; echo '__SUBAGENT_DONE_'$?'__'`, {
+    scriptPath: launchScriptFile,
+    scriptPreamble: [
+      `# Subagent ${run.kind} script for ${run.name}`,
+      `# Generated: ${new Date().toISOString()}`,
+      `# Session: ${run.sessionFile}`,
+      `# Surface: ${run.surface}`,
+    ].join("\n"),
+  });
+
+  const running: RunningSubagent = {
+    id: run.id,
+    name: run.name,
+    task: run.task,
+    agent: run.agent,
+    surface: run.surface,
+    startTime: run.startTime,
+    sessionFile: run.sessionFile,
+    launchScriptFile,
+    activityFile: run.activityFile,
+    interactive: run.interactive,
+    statusState: createStatusState({ startTimeMs: run.startTime }),
+  };
+  runningSubagents.set(run.id, running);
+
+  // The widget and the status supervisor are idle until something is running.
+  startWidgetRefresh();
+  startStatusRefresh(pi);
+
+  // A dedicated controller: the tool call's own signal completes when it
+  // returns, which is long before the subagent does.
+  const watcherAbort = new AbortController();
+  running.abortController = watcherAbort;
+
+  watchSubagent(running, watcherAbort.signal, run.fromEntry)
+    .then((result) => {
+      updateWidget(); // reflect removal from the map immediately
+      pi.sendMessage(
+        {
+          customType: "subagent_result",
+          content: resolveResultPresentation(result, running.name),
+          display: true,
+          details: {
+            name: running.name,
+            task: running.task,
+            agent: running.agent,
+            exitCode: result.exitCode,
+            elapsed: result.elapsed,
+            sessionFile: result.sessionFile,
+            ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+            ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+            ...(result.stats ? { stats: result.stats } : {}),
+          },
+        },
+        { triggerTurn: true, deliverAs: "steer" },
+      );
+    })
+    .catch((err) => {
+      updateWidget();
+      pi.sendMessage(
+        {
+          customType: "subagent_result",
+          content: `Sub-agent "${running.name}" error: ${err?.message ?? String(err)}`,
+          display: true,
+          details: { name: running.name, task: running.task, error: err?.message },
+        },
+        { triggerTurn: true, deliverAs: "steer" },
+      );
+    });
+
+  return running;
+}
+
 async function watchSubagent(
   running: RunningSubagent,
   signal: AbortSignal,
+  /**
+   * Session entry to summarize from. A resumed run reports only the turns it
+   * added, so its caller passes the transcript length recorded before resuming;
+   * a fresh spawn summarizes the whole file.
+   */
+  fromEntry = 0,
 ): Promise<SubagentResult> {
   const { name, task, surface, startTime, sessionFile } = running;
 
@@ -1457,7 +1558,7 @@ async function watchSubagent(
     // Pi subagent result extraction
     let summary: string;
     if (existsSync(sessionFile)) {
-      const allEntries = getNewEntries(sessionFile, 0);
+      const allEntries = getNewEntries(sessionFile, fromEntry);
       summary =
         findLastAssistantMessage(allEntries) ??
         (result.errorMessage
@@ -1680,90 +1781,21 @@ function createChildTransports(
       // operate where they did before.
       const resumeCdPrefix = loadout.cwd ? `cd ${shellEscape(loadout.cwd)} && ` : "";
 
-      const command = `${resumeCdPrefix}${resumeEnvPrefix}${parts.join(" ")}; echo '__SUBAGENT_DONE_'$?'__'`;
-      const launchScriptFile = join(
-        artifactDir,
-        "subagent-scripts",
-        `${slugify(name, "resume")}-resume-${Date.now()}.sh`,
-      );
-      sendLongCommand(surface, command, {
-        scriptPath: launchScriptFile,
-        scriptPreamble: [
-          `# Subagent resume script for ${name}`,
-          `# Generated: ${new Date().toISOString()}`,
-          `# Session: ${sessionPath}`,
-          `# Surface: ${surface}`,
-          ...(resumeMsgFile ? [`# Resume message file: ${resumeMsgFile}`] : []),
-        ].join("\n"),
-      });
-
-      // Register as a running subagent for widget tracking
-      const running: RunningSubagent = {
+      runSubagent(pi, {
         id,
         name,
         task: message,
         surface,
-        startTime,
         sessionFile: sessionPath,
-        launchScriptFile,
+        artifactDir,
         activityFile,
         interactive,
-        statusState: createStatusState({ startTimeMs: startTime }),
-      };
-      runningSubagents.set(id, running);
-      startWidgetRefresh();
-      startStatusRefresh(pi);
-
-      // Fire-and-forget watcher
-      const watcherAbort = new AbortController();
-      running.abortController = watcherAbort;
-
-      watchSubagent(running, watcherAbort.signal)
-        .then((result) => {
-          updateWidget();
-
-          const allEntries = getNewEntries(sessionPath, entryCountBefore);
-          const summary = findLastAssistantMessage(allEntries) ??
-            (result.errorMessage
-              ? `Subagent error: ${result.errorMessage}`
-              : result.exitCode !== 0
-                ? `Resumed session exited with code ${result.exitCode}`
-                : "Resumed session exited without new output");
-          const presentation = resolveResultPresentation(
-            { ...result, summary, sessionFile: sessionPath, sessionId: resumedSessionId },
-            name,
-          );
-
-          pi.sendMessage(
-            {
-              customType: "subagent_result",
-              content: presentation,
-              display: true,
-              details: {
-                name,
-                task: message,
-                exitCode: result.exitCode,
-                elapsed: result.elapsed,
-                sessionFile: sessionPath,
-                sessionId: resumedSessionId,
-                ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
-              },
-            },
-            { triggerTurn: true, deliverAs: "steer" },
-          );
-        })
-        .catch((err) => {
-          updateWidget();
-          pi.sendMessage(
-            {
-              customType: "subagent_result",
-              content: `Resume error: ${err?.message ?? String(err)}`,
-              display: true,
-              details: { name, error: err?.message },
-            },
-            { triggerTurn: true, deliverAs: "steer" },
-          );
-        });
+        startTime,
+        command: resumeCdPrefix + resumeEnvPrefix + parts.join(" "),
+        kind: "resume",
+        // Report only what this run adds, not the transcript it inherited.
+        fromEntry: entryCountBefore,
+      });
 
       return { status: "resumed", name, sessionId: resumedSessionId };
     },
@@ -1952,7 +1984,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         // from then on uniqueRunningName tracks it via the running map.
         let running;
         try {
-          running = await launchSubagent({ ...params, name: launchName }, ctx);
+          running = await launchSubagent(pi, { ...params, name: launchName }, ctx);
         } finally {
           if (reservedName) reservedNames.delete(reservedName);
         }
@@ -1964,55 +1996,6 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           sessionFile: running.sessionFile,
           sessionId: getSessionId(running.sessionFile),
         });
-
-        // Create a separate AbortController for the watcher
-        // (the tool's signal completes when we return)
-        const watcherAbort = new AbortController();
-        running.abortController = watcherAbort;
-
-        // Start widget refresh and status supervision when the first agent launches
-        startWidgetRefresh();
-        startStatusRefresh(pi);
-
-        // Fire-and-forget: start watching in background
-        watchSubagent(running, watcherAbort.signal)
-          .then((result) => {
-            updateWidget(); // reflect removal from Map immediately
-
-            const presentation = resolveResultPresentation(result, running.name);
-
-            pi.sendMessage(
-              {
-                customType: "subagent_result",
-                content: presentation,
-                display: true,
-                details: {
-                  name: running.name,
-                  task: running.task,
-                  agent: running.agent,
-                  exitCode: result.exitCode,
-                  elapsed: result.elapsed,
-                  sessionFile: result.sessionFile,
-                  ...(result.sessionId ? { sessionId: result.sessionId } : {}),
-                  ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
-                  ...(result.stats ? { stats: result.stats } : {}),
-                },
-              },
-              { triggerTurn: true, deliverAs: "steer" },
-            );
-          })
-          .catch((err) => {
-            updateWidget();
-            pi.sendMessage(
-              {
-                customType: "subagent_result",
-                content: `Sub-agent "${running.name}" error: ${err?.message ?? String(err)}`,
-                display: true,
-                details: { name: running.name, task: running.task, error: err?.message },
-              },
-              { triggerTurn: true, deliverAs: "steer" },
-            );
-          });
 
         // Return immediately
         return {
