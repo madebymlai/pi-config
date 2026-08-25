@@ -25,6 +25,18 @@
  * is what caught the "running" node, which nothing had been able to produce for
  * a long time while three call sites still rendered it.
  */
+/**
+ * Stamped on a snapshot when the subagent has finished and is shutting down.
+ *
+ * "done" is not a kind. The kinds answer "is it busy?", and a finished subagent
+ * and one blocked on a reply are both not busy, so both classify as "waiting".
+ * The distinction that matters lives one layer down in SubagentActivityPhase,
+ * which has its own "done". This label is how the two are told apart for
+ * display, and renderers must let it replace the word "waiting" rather than
+ * decorate it: "waiting, done" reads as a contradiction.
+ */
+export const DONE_LABEL = "done";
+
 export const SUBAGENT_STATUS_KINDS = ["starting", "active", "waiting", "stalled"] as const;
 
 export type SubagentStatusKind = (typeof SUBAGENT_STATUS_KINDS)[number];

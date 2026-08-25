@@ -22,6 +22,7 @@ import {
   type SubagentActivityState,
 } from "../protocol/activity.ts";
 import {
+  DONE_LABEL,
   formatElapsedDuration,
   SUBAGENT_STATUS_KINDS,
   type StatusActivityPhase,
@@ -252,7 +253,7 @@ function classifyStatus(state: SubagentStatusState, now: number): StatusSnapshot
       kind = "waiting";
     } else if (state.phase === "done") {
       kind = "waiting";
-      statusLabel = "done";
+      statusLabel = DONE_LABEL;
     } else {
       const referenceMs = state.firstObservationAtMs ?? state.startTimeMs;
       const elapsedSinceObservationMs = Math.max(0, now - referenceMs);

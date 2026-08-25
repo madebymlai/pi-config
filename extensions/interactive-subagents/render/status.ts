@@ -1,6 +1,7 @@
-import type {
-  StatusSnapshot,
-  SubagentStatusTransition,
+import {
+  DONE_LABEL,
+  type StatusSnapshot,
+  type SubagentStatusTransition,
 } from "../observe/status-snapshot.ts";
 
 const MAX_STATUS_NAME_LENGTH = 72;
@@ -64,11 +65,12 @@ function formatPlainStatusLine(boundedName: string, snapshot: StatusSnapshot) {
   }
 
   if (snapshot.kind === "waiting") {
-    const problem = snapshot.statusLabel && snapshot.statusLabel !== "done"
-      ? ` (${snapshot.statusLabel})`
-      : snapshot.statusLabel === "done"
-        ? " (done)"
-        : "";
+    // A finished subagent is not waiting for anything, so the label replaces
+    // the word rather than qualifying it.
+    if (snapshot.statusLabel === DONE_LABEL) {
+      return boundStatusLine(`${boundedName} running ${snapshot.elapsedText}, done.`);
+    }
+    const problem = snapshot.statusLabel ? ` (${snapshot.statusLabel})` : "";
     return boundStatusLine(`${boundedName} running ${snapshot.elapsedText}, ${formatWaitingDetail(snapshot)}${problem}.`);
   }
 

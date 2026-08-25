@@ -14,7 +14,7 @@
  * maps its own records to rows, which keeps the launcher's shape out of here.
  */
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { StatusSnapshot } from "../observe/status-snapshot.ts";
+import { DONE_LABEL, type StatusSnapshot } from "../observe/status-snapshot.ts";
 
 export interface WidgetRow {
   /** Display name, unique per spawner session. */
@@ -68,6 +68,8 @@ function rightLabel(snapshot: StatusSnapshot) {
     return label ? ` active · ${label}${duration} ` : " active ";
   }
   if (snapshot.kind === "waiting") {
+    // Finished, not waiting on anything. This row is about to leave the widget.
+    if (snapshot.statusLabel === DONE_LABEL) return " done ";
     const duration = snapshot.waitingDurationText ? ` ${snapshot.waitingDurationText}` : "";
     const detail = snapshot.statusLabel ? ` · ${snapshot.statusLabel}` : "";
     return ` waiting${duration}${detail} `;

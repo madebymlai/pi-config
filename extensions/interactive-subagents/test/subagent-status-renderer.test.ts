@@ -6,6 +6,8 @@ import {
   renderSubagentStatus,
 } from "../render/subagent-status.ts";
 import { UNPAINTED as theme, type RenderContext } from "../render/theme.ts";
+import { renderSubagentWidget } from "../render/widget.ts";
+import { DONE_LABEL } from "../observe/status-snapshot.ts";
 
 function context(over: Partial<RenderContext> = {}): RenderContext {
   return { theme, expandHint: () => "ctrl+o to expand", expanded: false, width: 60, ...over };
@@ -97,5 +99,54 @@ describe("render/subagent-status.ts", () => {
     it("opens with a blank line so it separates from what came before", () => {
       assert.equal(renderSubagentStatus({ lines: LINES, overflow: 0 }, context())[0], "");
     });
+  });
+});
+
+describe("a finished subagent versus a blocked one", () => {
+  /**
+   * Both classify as "waiting", because the kinds answer "is it busy?" and
+   * neither is. The label is the only thing that tells them apart, so it has to
+   * replace the word rather than qualify it: "waiting · done" reads as a
+   * contradiction, and it was what the widget showed for a subagent that had
+   * finished and was about to close its pane.
+   */
+  const base = {
+    elapsedMs: 6_000, elapsedText: "6s", activeSinceMs: null, activeDurationText: null,
+    activeScope: null, waitingSinceMs: 5_000, waitingDurationText: "1s", latestEvent: null,
+    activityLabel: null, snapshotState: "present" as const, snapshotError: null,
+    snapshotProblemText: null,
+  };
+
+  it("says done, not waiting, for a finished subagent", () => {
+    const rendered = renderSubagentWidget(
+      [{ name: "worker", elapsedMs: 6_000, snapshot: { ...base, kind: "waiting", statusLabel: DONE_LABEL } }],
+      46,
+      { showStatus: true },
+    ).join("\n");
+
+    assert.match(rendered, /done/);
+    assert.doesNotMatch(rendered, /waiting/, "a finished subagent is not waiting for anything");
+  });
+
+  it("still says waiting for one blocked on a reply", () => {
+    const rendered = renderSubagentWidget(
+      [{ name: "worker", elapsedMs: 6_000, snapshot: { ...base, kind: "waiting", statusLabel: null } }],
+      46,
+      { showStatus: true },
+    ).join("\n");
+
+    assert.match(rendered, /waiting/);
+    assert.doesNotMatch(rendered, /done/);
+  });
+
+  it("still qualifies waiting with a genuine problem label", () => {
+    const rendered = renderSubagentWidget(
+      [{ name: "worker", elapsedMs: 6_000, snapshot: { ...base, kind: "waiting", statusLabel: "wrong activity id" } }],
+      80,
+      { showStatus: true },
+    ).join("\n");
+
+    assert.match(rendered, /waiting/);
+    assert.match(rendered, /wrong activity id/);
   });
 });
