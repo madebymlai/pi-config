@@ -557,6 +557,21 @@ function muxUnavailableDelivery(): Delivery {
  * launch scripts for sub-agents. Path convention:
  *   <sessionDir>/artifacts/<session-id>/
  */
+/**
+ * A filename-safe slug of a display name, for the artifact and script files
+ * named after a subagent. `fallback` covers a name with no usable characters
+ * at all (e.g. one that is entirely punctuation or CJK).
+ */
+function slugify(name: string, fallback = "subagent") {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return slug || fallback;
+}
+
 function getArtifactDir(sessionDir: string, sessionId: string): string {
   return join(sessionDir, "artifacts", sessionId);
 }
@@ -566,7 +581,7 @@ function getArtifactDir(sessionDir: string, sessionId: string): string {
  * lives. Null when this session has no session file, and so has never
  * registered a subagent it could resume.
  */
-function parentArtifactDirOf(ctx: MessagingContext): string | null {
+function parentArtifactDirOf(ctx: MessagingContext) {
   try {
     return getArtifactDir(ctx.sessionManager.getSessionDir(), ctx.sessionManager.getSessionId());
   } catch {
@@ -892,13 +907,8 @@ function applySandboxToParts(
   if (loadout.identity) {
     const flag = loadout.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt";
     const spTimestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const spSafeName = opts.name
-      .toLowerCase()
-      .replace(/[^a-z0-9\s-]/g, "")
-      .replace(/\s+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "");
-    const spPath = join(opts.artifactDir, `context/${spSafeName || "subagent"}-sysprompt-${spTimestamp}.md`);
+    const spSafeName = slugify(opts.name);
+    const spPath = join(opts.artifactDir, `context/${spSafeName}-sysprompt-${spTimestamp}.md`);
     mkdirSync(dirname(spPath), { recursive: true });
     writeFileSync(spPath, loadout.identity, "utf8");
     parts.push(flag, shellEscape(spPath));
@@ -1141,7 +1151,6 @@ export const __test__ = {
   getToolExtensionPath,
   uniqueRunningName,
   reservedNames,
-  steerSubagent,
   steerRunning,
   createChildTransports,
   resolveResultPresentation,
@@ -1278,12 +1287,7 @@ async function launchSubagent(
     const cdPrefix = effectiveCwd ? `cd ${shellEscape(effectiveCwd)} && ` : "";
     const command = `${cdPrefix}${cmdParts.join(" ")}; echo '__SUBAGENT_DONE_'$?'__'`;
 
-    const launchScriptName = `${(params.name || "subagent")
-      .toLowerCase()
-      .replace(/[^a-z0-9\s-]/g, "")
-      .replace(/\s+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "") || "subagent"}-${id}.sh`;
+    const launchScriptName = `${slugify(params.name || "subagent")}-${id}.sh`;
     const launchScriptFile = join(artifactDir, "subagent-scripts", launchScriptName);
 
     sendLongCommand(surface, command, {
@@ -1393,13 +1397,8 @@ async function launchSubagent(
     taskArg = fullTask;
   } else {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const safeName = params.name
-      .toLowerCase()
-      .replace(/[^a-z0-9\s-]/g, "") // strip everything except alphanumeric, spaces, hyphens
-      .replace(/\s+/g, "-") // spaces to hyphens
-      .replace(/-+/g, "-") // collapse multiple hyphens
-      .replace(/^-|-$/g, ""); // trim leading/trailing hyphens
-    const artifactName = `context/${safeName || "subagent"}-${timestamp}.md`;
+    const safeName = slugify(params.name);
+    const artifactName = `context/${safeName}-${timestamp}.md`;
     const artifactPath = join(artifactDir, artifactName);
     mkdirSync(dirname(artifactPath), { recursive: true });
     writeFileSync(artifactPath, fullTask, "utf8");
@@ -1420,12 +1419,7 @@ async function launchSubagent(
 
   const piCommand = cdPrefix + envPrefix + parts.join(" ");
   const command = `${piCommand}; echo '__SUBAGENT_DONE_'$?'__'`;
-  const launchScriptName = `${(params.name || "subagent")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "") || "subagent"}-${id}.sh`;
+  const launchScriptName = `${slugify(params.name || "subagent")}-${id}.sh`;
   const launchScriptFile = join(artifactDir, "subagent-scripts", launchScriptName);
   sendLongCommand(surface, command, {
     scriptPath: launchScriptFile,
@@ -1663,7 +1657,7 @@ function createChildTransports(
     send?: (surface: string, command: string) => void;
     muxAvailable?: () => boolean;
   } = {},
-): Transport[] {
+) {
   const send = deps.send ?? sendCommand;
   const muxAvailable = deps.muxAvailable ?? isMuxAvailable;
   const runningNames = () => [...new Set(Array.from(runningSubagents.values()).map((r) => r.name))];
@@ -1773,12 +1767,7 @@ function createChildTransports(
         resumeMsgFile = join(
           artifactDir,
           "subagent-resume",
-          `${name
-            .toLowerCase()
-            .replace(/[^a-z0-9\s-]/g, "")
-            .replace(/\s+/g, "-")
-            .replace(/-+/g, "-")
-            .replace(/^-|-$/g, "") || "resume"}-${msgTimestamp}.md`,
+          `${slugify(name, "resume")}-${msgTimestamp}.md`,
         );
         mkdirSync(dirname(resumeMsgFile), { recursive: true });
         writeFileSync(resumeMsgFile, message, "utf8");
@@ -1816,12 +1805,7 @@ function createChildTransports(
       const launchScriptFile = join(
         artifactDir,
         "subagent-scripts",
-        `${name
-          .toLowerCase()
-          .replace(/[^a-z0-9\s-]/g, "")
-          .replace(/\s+/g, "-")
-          .replace(/-+/g, "-")
-          .replace(/^-|-$/g, "") || "resume"}-resume-${Date.now()}.sh`,
+        `${slugify(name, "resume")}-resume-${Date.now()}.sh`,
       );
       sendLongCommand(surface, command, {
         scriptPath: launchScriptFile,

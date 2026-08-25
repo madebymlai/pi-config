@@ -30,7 +30,7 @@
  * safe: a reloaded extension overwrites its own slot instead of stacking a
  * second copy of its transports behind the stale ones.
  */
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 
@@ -76,7 +76,7 @@ export type Contributor = (typeof CONTRIBUTORS)[number];
 
 const HUB_KEY = Symbol.for("pi-subagents/message-transports");
 
-function hub(): Map<Contributor, Transport[]> {
+function hub() {
   const globals = globalThis as Record<symbol, unknown>;
   let existing = globals[HUB_KEY] as Map<Contributor, Transport[]> | undefined;
   if (!existing) {
@@ -86,27 +86,44 @@ function hub(): Map<Contributor, Transport[]> {
   return existing;
 }
 
-function activeTransports(): Transport[] {
+/**
+ * The transports eligible to serve `to`.
+ *
+ * `parent` is reserved, so it is offered ONLY to the transport contributed for
+ * it. Without this a stale registry entry named "parent" — one written before
+ * the name was reserved — would be resumed as a subagent by the child
+ * transports, which run first, and the real parent would be unreachable.
+ * Refusing the name at spawn time cannot fix a registry that already has it.
+ */
+function eligibleTransports(to: string) {
+  if (to === PARENT) return hub().get("parent") ?? [];
   return CONTRIBUTORS.flatMap((contributor) => hub().get(contributor) ?? []);
 }
 
-function reasonOf(error: unknown): string {
+function reasonOf(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return message || "(no detail)";
 }
 
 /** Ask each transport in turn; the first to claim the recipient decides the outcome. */
 async function route(to: string, message: string, ctx: MessagingContext): Promise<Delivery> {
-  const transports = activeTransports();
+  const transports = eligibleTransports(to);
+  let failure: Delivery | null = null;
 
   for (const transport of transports) {
     try {
       const delivery = await transport.deliver(to, message, ctx);
       if (delivery) return delivery;
     } catch (error) {
-      return { status: "transport-failed", reason: reasonOf(error) };
+      // A transport that throws is buggy, not authoritative: it never said the
+      // recipient was its own. Keep asking the rest so one broken transport
+      // cannot make every other recipient unreachable, and report its failure
+      // only if nothing else claims `to`.
+      failure ??= { status: "transport-failed", reason: reasonOf(error) };
     }
   }
+
+  if (failure) return failure;
 
   // Nothing claimed it. Addressing a parent you do not have is a different
   // mistake from naming a subagent that does not exist, so it reads differently.
@@ -114,91 +131,101 @@ async function route(to: string, message: string, ctx: MessagingContext): Promis
 
   const known: string[] = [];
   for (const transport of transports) {
-    for (const name of transport.known(ctx)) if (!known.includes(name)) known.push(name);
+    try {
+      for (const name of transport.known(ctx)) if (!known.includes(name)) known.push(name);
+    } catch {
+      // A transport that cannot list its recipients still must not stop the
+      // others from explaining themselves.
+    }
   }
   return { status: "unknown-target", known };
 }
 
-/** The text the calling agent reads, and whether it should read as a failure. */
-function present(delivery: Delivery): { text: string; failed: boolean } {
+/**
+ * How one outcome reads. Annotated because the literal tones must stay literal:
+ * they index the theme's colours, and inference would widen them to string.
+ *
+ * One switch rather than three parallel ones, so a new Delivery variant is a
+ * single type error here instead of silently rendering as a generic failure.
+ */
+interface Presentation {
+  tone: "success" | "accent" | "error";
+  glyph: string;
+  /** The collapsed one-liner in the transcript. */
+  summary: string;
+  /** What the calling agent reads as the tool result. */
+  text: string;
+}
+
+function describe(delivery: Delivery): Presentation {
   switch (delivery.status) {
     case "steered":
       return {
-        failed: false,
+        tone: "success",
+        glyph: "✓",
+        summary: `${delivery.name} — message delivered`,
         text:
           `Message delivered to running subagent "${delivery.name}". It picks this up at its next ` +
           `turn boundary. If it exits, its result still arrives as a steer message.`,
       };
     case "resumed":
       return {
-        failed: false,
+        tone: "accent",
+        glyph: "⟳",
+        summary: `${delivery.name} — resumed`,
         text:
           `Session "${delivery.name}" resumed. This is fire-and-forget: when it finishes, its ` +
           `result is delivered to you automatically. Do not poll, sleep, or read session files.`,
       };
     case "asked":
       return {
-        failed: false,
+        tone: "accent",
+        glyph: "?",
+        summary: "orchestrator — question sent",
         text:
           "Message sent to the orchestrator. Stop here and wait — do not continue working or " +
           "assume an answer. Their reply will arrive as your next message.",
       };
     case "no-parent":
       return {
-        failed: true,
+        tone: "error",
+        glyph: "✗",
+        summary: "no parent to message",
         text:
           `You are the top-level session, so there is no "${PARENT}" to message. ` +
           `Address a subagent by name instead.`,
       };
     case "unknown-target":
       return {
-        failed: true,
+        tone: "error",
+        glyph: "✗",
+        summary: "unknown recipient",
         text:
           delivery.known.length > 0
             ? `No recipient named that in this session. Known recipients: ${delivery.known.join(", ")}.`
             : "No recipient named that in this session, and nothing is addressable yet.",
       };
     case "empty-message":
-      return { failed: true, text: "`message` is required — there is nothing to deliver." };
+      return {
+        tone: "error",
+        glyph: "✗",
+        summary: "empty message",
+        text: "`message` is required — there is nothing to deliver.",
+      };
     case "unresumable":
-      return { failed: true, text: delivery.reason };
+      return {
+        tone: "error",
+        glyph: "✗",
+        summary: `cannot resume — ${delivery.reason}`,
+        text: delivery.reason,
+      };
     case "transport-failed":
-      return { failed: true, text: `Delivery failed: ${delivery.reason}` };
-  }
-}
-
-function icon(delivery: Delivery, theme: any): string {
-  switch (delivery.status) {
-    case "steered":
-      return theme.fg("success", "✓");
-    case "resumed":
-      return theme.fg("accent", "⟳");
-    case "asked":
-      return theme.fg("accent", "?");
-    default:
-      return theme.fg("error", "✗");
-  }
-}
-
-/** The short line shown beside the icon — what happened, not the whole result. */
-function summarize(delivery: Delivery): string {
-  switch (delivery.status) {
-    case "steered":
-      return `${delivery.name} — message delivered`;
-    case "resumed":
-      return `${delivery.name} — resumed`;
-    case "asked":
-      return "orchestrator — question sent";
-    case "no-parent":
-      return "no parent to message";
-    case "unknown-target":
-      return "unknown recipient";
-    case "empty-message":
-      return "empty message";
-    case "unresumable":
-      return `cannot resume — ${delivery.reason}`;
-    case "transport-failed":
-      return `delivery failed — ${delivery.reason}`;
+      return {
+        tone: "error",
+        glyph: "✗",
+        summary: `delivery failed — ${delivery.reason}`,
+        text: `Delivery failed: ${delivery.reason}`,
+      };
   }
 }
 
@@ -212,7 +239,7 @@ export function registerSendMessage(
   pi: ExtensionAPI,
   contributor: Contributor,
   transports: Transport[],
-): void {
+) {
   hub().set(contributor, transports);
 
   pi.registerTool({
@@ -265,13 +292,9 @@ export function registerSendMessage(
       );
     },
 
-    renderResult(result, _options, theme) {
-      const delivery = result.details as Delivery;
-      return new Text(
-        icon(delivery, theme) + " " + theme.fg("dim", summarize(delivery)),
-        0,
-        0,
-      );
+    renderResult(result, _options, theme: Theme) {
+      const { tone, glyph, summary } = describe(result.details as Delivery);
+      return new Text(theme.fg(tone, glyph) + " " + theme.fg("dim", summary), 0, 0);
     },
 
     async execute(_toolCallId, params: { to?: string; message?: string }, _signal, _onUpdate, ctx) {
@@ -284,8 +307,10 @@ export function registerSendMessage(
         ? { status: "empty-message" }
         : await route(to, message, ctx as MessagingContext);
 
-      const { text } = present(delivery);
-      return { content: [{ type: "text" as const, text }], details: delivery };
+      return {
+        content: [{ type: "text" as const, text: describe(delivery).text }],
+        details: delivery,
+      };
     },
   });
 }

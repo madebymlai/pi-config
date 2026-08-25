@@ -57,6 +57,7 @@ import {
 } from "../subagent-done.ts";
 import subagentDoneExtension from "../subagent-done.ts";
 import { registerSendMessage, __test__ as messagingTestApi } from "../messaging.ts";
+import { createMockExtensionApi } from "./support/mock-extension-api.ts";
 import { __pollForExitTest__ } from "../tmux.ts";
 
 // --- Helpers ---
@@ -79,43 +80,6 @@ function withTempDir(run: (dir: string) => void) {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-}
-
-function createMockExtensionApi() {
-  const registeredTools: Array<any> = [];
-  const registeredCommands: Array<any> = [];
-  const registeredMessageRenderers: Array<any> = [];
-  const sentUserMessages: string[] = [];
-  const sentMessages: Array<any> = [];
-  return {
-    registeredTools,
-    registeredCommands,
-    registeredMessageRenderers,
-    sentUserMessages,
-    sentMessages,
-    api: {
-      on() {},
-      registerTool(tool: any) {
-        registeredTools.push(tool);
-      },
-      registerCommand(name: string, command: any) {
-        registeredCommands.push({ name, ...command });
-      },
-      registerMessageRenderer(name: string, renderer: any) {
-        registeredMessageRenderers.push({ name, renderer });
-      },
-      registerShortcut() {},
-      sendUserMessage(message: string) {
-        sentUserMessages.push(message);
-      },
-      sendMessage(message: any, options?: any) {
-        sentMessages.push({ message, options });
-      },
-      getAllTools() {
-        return [];
-      },
-    } as any,
-  };
 }
 
 function restoreEnvVar(name: string, value: string | undefined) {
@@ -2289,31 +2253,114 @@ describe("subagent interruption", () => {
     assert.match(result.content[0].text, /reserved/i);
   });
 
-  it("steers a running subagent by typing into its pane (newlines flattened)", () => {
+  it("steers a running subagent by typing into its pane (newlines flattened)", async () => {
     const testApi = (subagentsModule as any).__test__;
-    let sentSurface = "";
-    let sentText = "";
-    const running = makeRunning();
+    const runningMap = testApi.runningSubagents as Map<string, any>;
+    runningMap.clear();
 
-    const result = testApi.steerSubagent(running, "do this\nthen that", (surface: string, text: string) => {
-      sentSurface = surface;
-      sentText = text;
-    });
+    try {
+      runningMap.set("a1", makeRunning());
+      let sentSurface = "";
+      let sentText = "";
+      const send = sendMessageWithFakeMux((surface: string, text: string) => {
+        sentSurface = surface;
+        sentText = text;
+      });
 
-    assert.deepEqual(result, { ok: true });
-    assert.equal(sentSurface, "pane-1");
-    assert.equal(sentText, "do this then that");
+      // Each newline submits a turn in the child's editor, so a multi-line
+      // message would otherwise fire as several partial turns.
+      const out = await send("Worker", "do this\nthen that");
+
+      assert.equal(out.details.status, "steered");
+      assert.equal(sentSurface, "pane-1");
+      assert.equal(sentText, "do this then that");
+    } finally {
+      runningMap.clear();
+    }
   });
 
-  it("returns an explicit error when steering delivery fails", () => {
-    const testApi = (subagentsModule as any).__test__;
-    const running = makeRunning();
+  describe("resuming a finished subagent", () => {
+    /** A spawner session with one finished subagent registered under `name`. */
+    function withRegisteredSubagent(name: string, opts: { sessionFileExists?: boolean } = {}) {
+      const dir = createTestDir();
+      const sessionDir = join(dir, "sessions");
+      const sessionId = "parent-1";
+      const artifactDir = join(sessionDir, "artifacts", sessionId);
+      const sessionFile = join(dir, "finished.jsonl");
+      if (opts.sessionFileExists !== false) writeFileSync(sessionFile, "", "utf8");
+      registerName(artifactDir, name, { sessionFile, sessionId: "child-1" });
+      return { dir, sessionDir, sessionId, sessionFile };
+    }
 
-    const result = testApi.steerSubagent(running, "hi", () => {
-      throw new Error("mux write failed");
+    it("refuses to resume without a sandbox snapshot rather than relaunching unrestricted", async () => {
+      const testApi = (subagentsModule as any).__test__;
+      const runningMap = testApi.runningSubagents as Map<string, any>;
+      runningMap.clear();
+      const { dir, sessionDir, sessionId } = withRegisteredSubagent("Scout");
+
+      try {
+        // No <session>.loadout.json was written, so the original sandbox cannot
+        // be replayed. Resuming bare would load every global extension.
+        const send = sendMessageWithFakeMux(() => {}, sessionDir, sessionId);
+        const out = await send("Scout", "carry on");
+
+        assert.equal(out.details.status, "unresumable");
+        assert.match(out.details.reason, /no sandbox snapshot/i);
+      } finally {
+        runningMap.clear();
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
 
-    assert.match(result.error, /Failed to deliver message/);
+    it("refuses when the registered session file is gone", async () => {
+      const testApi = (subagentsModule as any).__test__;
+      const runningMap = testApi.runningSubagents as Map<string, any>;
+      runningMap.clear();
+      const { dir, sessionDir, sessionId } = withRegisteredSubagent("Scout", {
+        sessionFileExists: false,
+      });
+
+      try {
+        const send = sendMessageWithFakeMux(() => {}, sessionDir, sessionId);
+        const out = await send("Scout", "carry on");
+
+        assert.equal(out.details.status, "unresumable");
+        assert.match(out.details.reason, /session file is gone/i);
+      } finally {
+        runningMap.clear();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("steers instead of resuming when that session is still running under another name", async () => {
+      const testApi = (subagentsModule as any).__test__;
+      const runningMap = testApi.runningSubagents as Map<string, any>;
+      runningMap.clear();
+      const { dir, sessionDir, sessionId, sessionFile } = withRegisteredSubagent("Scout");
+
+      try {
+        // Two processes appending to one .jsonl corrupts it, so a registry hit
+        // whose session is live must be steered, not resumed — even though the
+        // running pane carries a different display name.
+        runningMap.set(
+          "a1",
+          makeRunning({ id: "a1", name: "Scout Redux", surface: "pane-9", sessionFile }),
+        );
+
+        let sentSurface = "";
+        const send = sendMessageWithFakeMux((surface: string) => {
+          sentSurface = surface;
+        }, sessionDir, sessionId);
+        const out = await send("Scout", "carry on");
+
+        assert.equal(out.details.status, "steered");
+        assert.equal(out.details.name, "Scout Redux");
+        assert.equal(sentSurface, "pane-9");
+      } finally {
+        runningMap.clear();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   /**
@@ -2321,7 +2368,11 @@ describe("subagent interruption", () => {
    * routing, status transitions and outcome mapping are all exercised while
    * nothing shells out.
    */
-  function sendMessageWithFakeMux(send: (surface: string, command: string) => void) {
+  function sendMessageWithFakeMux(
+    send: (surface: string, command: string) => void,
+    sessionDir = "/nonexistent",
+    sessionId = "none",
+  ) {
     const { api, registeredTools } = createMockExtensionApi();
     messagingTestApi.resetTransports();
     const testApi = (subagentsModule as any).__test__;
@@ -2335,8 +2386,8 @@ describe("subagent interruption", () => {
     return (to: string, message: string) =>
       tool.execute("c1", { to, message }, undefined, undefined, {
         sessionManager: {
-          getSessionDir: () => "/nonexistent",
-          getSessionId: () => "none",
+          getSessionDir: () => sessionDir,
+          getSessionId: () => sessionId,
         },
       });
   }

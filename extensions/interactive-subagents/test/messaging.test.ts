@@ -8,27 +8,7 @@ import {
   type Delivery,
   type Transport,
 } from "../messaging.ts";
-
-function createMockExtensionApi() {
-  const registeredTools: Array<any> = [];
-  return {
-    registeredTools,
-    api: {
-      on() {},
-      registerTool(tool: any) {
-        registeredTools.push(tool);
-      },
-      registerCommand() {},
-      registerMessageRenderer() {},
-      registerShortcut() {},
-      sendUserMessage() {},
-      sendMessage() {},
-      getAllTools() {
-        return [];
-      },
-    } as any,
-  };
-}
+import { createMockExtensionApi } from "./support/mock-extension-api.ts";
 
 /** A transport that claims exactly the names it is given and records what it delivered. */
 function fakeTransport(
@@ -145,6 +125,32 @@ describe("messaging.ts", () => {
     });
   });
 
+  describe("the reserved parent name", () => {
+    it("is never offered to a child transport, even one that claims it", async () => {
+      // A registry written before the name was reserved can still hold a
+      // subagent called "parent". Refusing the name at spawn time cannot undo
+      // that, so routing itself must keep the name for the parent transport.
+      const impostor = fakeTransport([PARENT], { status: "resumed", name: PARENT, sessionId: "s1" });
+      const parent = fakeTransport([PARENT], { status: "asked" });
+      const tool = sendMessageTool(["children", [impostor]], ["parent", [parent]]);
+
+      const out = await tool.execute("c1", { to: PARENT, message: "hi" }, undefined, undefined, ctx);
+
+      assert.equal(out.details.status, "asked");
+      assert.deepEqual(impostor.delivered, [], "a child transport must not serve the reserved name");
+    });
+
+    it("reports no-parent rather than falling back to a child transport", async () => {
+      const impostor = fakeTransport([PARENT], { status: "steered", name: PARENT });
+      const tool = sendMessageTool(["children", [impostor]]);
+
+      const out = await tool.execute("c1", { to: PARENT, message: "hi" }, undefined, undefined, ctx);
+
+      assert.equal(out.details.status, "no-parent");
+      assert.deepEqual(impostor.delivered, []);
+    });
+  });
+
   describe("failures are results, never throws", () => {
     it("reports an unknown recipient with the names that do exist", async () => {
       const children = fakeTransport(["scout", "worker"], { status: "steered", name: "scout" });
@@ -200,6 +206,55 @@ describe("messaging.ts", () => {
 
       assert.equal(out.details.status, "transport-failed");
       assert.match(out.details.reason, /pane died/);
+    });
+
+    it("keeps asking the remaining transports after one throws", async () => {
+      // A throwing transport never said the recipient was its own, so it must
+      // not be able to make every other recipient unreachable.
+      const broken: Transport = {
+        known: () => ["scout"],
+        deliver() {
+          throw new Error("corrupt registry");
+        },
+      };
+      const parent = fakeTransport([PARENT], { status: "asked" });
+      const tool = sendMessageTool(["children", [broken]], ["parent", [parent]]);
+
+      const reached = await tool.execute("c1", { to: "anything", message: "hi" }, undefined, undefined, ctx);
+      assert.equal(reached.details.status, "transport-failed", "nothing else claimed it, so report the throw");
+      assert.match(reached.details.reason, /corrupt registry/);
+    });
+
+    it("still reaches a later transport that claims the recipient after an earlier throw", async () => {
+      const broken: Transport = {
+        known: () => [],
+        deliver() {
+          throw new Error("corrupt registry");
+        },
+      };
+      const good = fakeTransport(["scout"], { status: "steered", name: "scout" });
+      const tool = sendMessageTool(["children", [broken, good]]);
+
+      const out = await tool.execute("c1", { to: "scout", message: "hi" }, undefined, undefined, ctx);
+
+      assert.equal(out.details.status, "steered");
+      assert.deepEqual(good.delivered, [["scout", "hi"]]);
+    });
+
+    it("still explains an unknown recipient when a transport cannot list its names", async () => {
+      const broken: Transport = {
+        known: () => {
+          throw new Error("registry unreadable");
+        },
+        deliver: () => null,
+      };
+      const good = fakeTransport(["scout"], { status: "steered", name: "scout" });
+      const tool = sendMessageTool(["children", [broken, good]]);
+
+      const out = await tool.execute("c1", { to: "typo", message: "hi" }, undefined, undefined, ctx);
+
+      assert.equal(out.details.status, "unknown-target");
+      assert.deepEqual(out.details.known, ["scout"]);
     });
 
     it("rejects a blank recipient and a blank message without consulting transports", async () => {
