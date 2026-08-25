@@ -7,7 +7,7 @@ import type { StatusSnapshot } from "../status.ts";
 /** A snapshot is a plain value here — the widget only ever reads it. */
 function snapshot(over: Partial<StatusSnapshot> = {}): StatusSnapshot {
   return {
-    kind: "running",
+    kind: "waiting",
     elapsedText: "1m",
     ...over,
   } as StatusSnapshot;
@@ -100,7 +100,6 @@ describe("widget.ts", () => {
   describe("status labels", () => {
     const cases: Array<[string, Partial<StatusSnapshot>, RegExp]> = [
       ["starting", { kind: "starting" }, /starting…/],
-      ["running", { kind: "running", elapsedText: "2m" }, /running 2m/],
       ["active with a tool", { kind: "active", activityLabel: "grep", activeScope: "tool" }, /active · grep/],
       ["waiting", { kind: "waiting", waitingDurationText: "30s" }, /waiting 30s/],
       ["stalled", { kind: "stalled", statusLabel: "no output" }, /stalled · no output/],

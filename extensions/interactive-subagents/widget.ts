@@ -38,7 +38,6 @@ const ICON_DIM = "\x1b[38;2;128;128;128m";
 function widgetIcon(kind: StatusSnapshot["kind"]): string {
   switch (kind) {
     case "active":
-    case "running":
       return `${ICON_YELLOW}⟳${RST}`;
     case "stalled":
       return `${ICON_RED}⟳${RST}`;
@@ -63,7 +62,6 @@ function formatMMSS(elapsedMs: number) {
 
 function rightLabel(snapshot: StatusSnapshot) {
   if (snapshot.kind === "starting") return " starting… ";
-  if (snapshot.kind === "running") return ` running ${snapshot.elapsedText} `;
   if (snapshot.kind === "active") {
     const label = snapshot.activityLabel ?? snapshot.activeScope;
     const duration = snapshot.activeDurationText ? ` ${snapshot.activeDurationText}` : "";

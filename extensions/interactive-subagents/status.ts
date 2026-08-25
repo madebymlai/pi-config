@@ -11,8 +11,21 @@ const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STATUS_CONFIG_PATH = join(PACKAGE_ROOT, "config.json");
 const STATUS_CONFIG_EXAMPLE_PATH = join(PACKAGE_ROOT, "config.json.example");
 
-export type SubagentStatusKind = "starting" | "active" | "waiting" | "stalled" | "running";
-export type SubagentStatusTransition = "stalled" | "recovered" | null;
+/**
+ * The status machine's nodes, S0 first. The list is the source of truth and the
+ * type derives from it, so the two cannot drift apart.
+ *
+ * Every node here must be reachable from S0 by some sequence of observations;
+ * test/reachability.test.ts proves that by exploring the state space. That test
+ * is what caught the "running" node, which nothing had been able to produce for
+ * a long time while three call sites still rendered it.
+ */
+export const SUBAGENT_STATUS_KINDS = ["starting", "active", "waiting", "stalled"] as const;
+export type SubagentStatusKind = (typeof SUBAGENT_STATUS_KINDS)[number];
+
+/** The transitions worth waking a parent for. Same reachability rule applies. */
+export const SUBAGENT_STATUS_TRANSITIONS = ["stalled", "recovered"] as const;
+export type SubagentStatusTransition = (typeof SUBAGENT_STATUS_TRANSITIONS)[number] | null;
 export type StatusSnapshotState = "unseen" | "present" | "missing" | "invalid" | "wrong-id";
 export type StatusActivityPhase = "starting" | "active" | "waiting" | "done";
 
@@ -56,7 +69,8 @@ export interface SubagentStatusState {
   snapshotState: StatusSnapshotState;
   snapshotProblemSinceMs: number | null;
   snapshotError: string | null;
-  currentKind: SubagentStatusKind;
+  /** Written only by transitionTo. See the note there. */
+  readonly currentKind: SubagentStatusKind;
 }
 
 export interface StatusSnapshot {
@@ -196,6 +210,21 @@ export function formatElapsedDuration(ms: number): string {
   return `${minutes}m`;
 }
 
+/**
+ * The only writer of currentKind, so a status assignment from outside the module
+ * is not something you can express: grep for `currentKind:` and this is the one
+ * hit that is not a read.
+ *
+ * There is deliberately no adjacency check here. The transition relation was
+ * measured (test/reachability.test.ts) and it is complete: every kind can legally
+ * follow every kind, so a table of legal pairs would forbid nothing while adding
+ * a second place to keep in sync. Reachability is the property worth enforcing;
+ * adjacency is not.
+ */
+function transitionTo(state: SubagentStatusState, kind: SubagentStatusKind): SubagentStatusState {
+  return kind === state.currentKind ? state : { ...state, currentKind: kind };
+}
+
 export function createStatusState(params: { startTimeMs: number }): SubagentStatusState {
   return {
     startTimeMs: params.startTimeMs,
@@ -214,7 +243,8 @@ export function createStatusState(params: { startTimeMs: number }): SubagentStat
     snapshotState: "unseen",
     snapshotProblemSinceMs: null,
     snapshotError: null,
-    currentKind: "starting",
+    // S0, taken from the declared node list rather than repeated as a literal.
+    currentKind: SUBAGENT_STATUS_KINDS[0],
   };
 }
 
@@ -278,8 +308,18 @@ export function observeStatus(
   };
 }
 
+/**
+ * The parent just steered this subagent, so it is waiting on the parent by
+ * definition rather than by observation.
+ *
+ * This is a real transition to "waiting", but a self-inflicted one, so it must
+ * not be reported back to the parent as news. That falls out structurally: only
+ * advanceStatusState returns transitions, and this path rebaselines the machine
+ * without going through it. Skipping the rebaseline instead would make the next
+ * tick announce a "recovered" that the parent itself caused.
+ */
 export function forceStatusAfterInterrupt(state: SubagentStatusState, now: number): SubagentStatusState {
-  return {
+  const interrupted: SubagentStatusState = {
     ...state,
     firstObservationAtMs: state.firstObservationAtMs ?? now,
     lastActivityAtMs: now,
@@ -295,8 +335,9 @@ export function forceStatusAfterInterrupt(state: SubagentStatusState, now: numbe
     snapshotState: "present",
     snapshotProblemSinceMs: null,
     snapshotError: null,
-    currentKind: "waiting",
   };
+
+  return transitionTo(interrupted, "waiting");
 }
 
 function classifyProblemState(state: SubagentStatusState, now: number): Pick<StatusSnapshot, "kind" | "statusLabel"> {
@@ -399,10 +440,7 @@ export function advanceStatusState(
   return {
     snapshot,
     transition,
-    nextState: {
-      ...state,
-      currentKind: snapshot.kind,
-    },
+    nextState: transitionTo(state, snapshot.kind),
   };
 }
 
@@ -430,10 +468,6 @@ export function formatStatusLine(name: string, snapshot: StatusSnapshot): string
   if (snapshot.kind === "starting") {
     const label = snapshot.statusLabel ? ` (${snapshot.statusLabel})` : "";
     return boundStatusLine(`${boundedName} running ${snapshot.elapsedText}, starting${label}.`);
-  }
-
-  if (snapshot.kind === "running") {
-    return boundStatusLine(`${boundedName} running ${snapshot.elapsedText}.`);
   }
 
   if (snapshot.kind === "active") {
