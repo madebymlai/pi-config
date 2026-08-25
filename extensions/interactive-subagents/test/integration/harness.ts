@@ -238,6 +238,43 @@ export function startPi(
  * Poll until a regex pattern appears in the surface's screen output.
  * Throws on timeout with the last screen contents for debugging.
  */
+/**
+ * The screen with tmux's hard wraps undone.
+ *
+ * capture-pane returns what the terminal shows, so a line longer than the pane
+ * is broken at the pane width with a real newline. A sentinel wider than the
+ * pane is therefore split across lines and no longer matches the pattern that
+ * produced it. Splitting panes makes this worse: each split halves the width,
+ * so a suite that passes in a wide terminal fails in an ordinary one.
+ *
+ * Joining every line gives back the logical stream. Patterns are tested against
+ * both forms, so anything that genuinely depends on line structure still works.
+ */
+function paneWidth(surface: string): string {
+  try {
+    return execFileSync("tmux", ["display-message", "-p", "-t", surface, "#{pane_width}"], {
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    return "unknown";
+  }
+}
+
+function unwrap(screen: string): string {
+  return screen.replace(/\n/g, "");
+}
+
+/**
+ * Whether a captured screen shows `text`, wrapping included.
+ *
+ * Assert with this rather than screen.includes: a marker wider than the pane is
+ * split across lines by capture-pane, so a plain includes() only passes in a
+ * terminal wide enough to have avoided the wrap.
+ */
+export function screenContains(screen: string, text: string): boolean {
+  return screen.includes(text) || unwrap(screen).includes(text);
+}
+
 export async function waitForScreen(
   surface: string,
   pattern: RegExp,
@@ -248,7 +285,7 @@ export async function waitForScreen(
   while (Date.now() - start < timeout) {
     try {
       const screen = await readScreenAsync(surface, lines);
-      if (pattern.test(screen)) return screen;
+      if (pattern.test(screen) || pattern.test(unwrap(screen))) return screen;
     } catch {}
     await sleep(2000);
   }
@@ -258,7 +295,9 @@ export async function waitForScreen(
     finalScreen = readScreen(surface, lines);
   } catch {}
   throw new Error(
-    `Timeout (${timeout}ms) waiting for pattern ${pattern}.\nLast screen:\n${finalScreen.slice(-1000)}`,
+    `Timeout (${timeout}ms) waiting for pattern ${pattern}.\n` +
+      `Pane width ${paneWidth(surface)}; matched against the screen and its unwrapped form.\n` +
+      `Last screen:\n${finalScreen.slice(-1000)}`,
   );
 }
 

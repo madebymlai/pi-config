@@ -30,6 +30,7 @@ import {
   uniqueId,
   trackTempFile,
   waitForFile,
+  screenContains,
   waitForScreen,
   type TestEnv,
 } from "./harness.ts";
@@ -98,7 +99,7 @@ for (const backend of backends) {
 
       const screen = readScreen(surface, 50);
       assert.ok(
-        screen.includes(`MARKER_${marker}`),
+        screenContains(screen, `MARKER_${marker}`),
         `Expected screen to contain MARKER_${marker}. Got:\n${screen}`,
       );
 
@@ -117,12 +118,12 @@ for (const backend of backends) {
 
       const screen = readScreen(surface, 50);
       assert.ok(
-        screen.includes(`SPEC_${marker}`),
+        screenContains(screen, `SPEC_${marker}`),
         `Expected special-char output. Got:\n${screen}`,
       );
       // $ should be literal inside single quotes
       assert.ok(
-        screen.includes("$HOME"),
+        screenContains(screen, "$HOME"),
         `Expected literal $HOME in output. Got:\n${screen}`,
       );
     });
@@ -140,11 +141,11 @@ for (const backend of backends) {
 
       const screen = readScreen(surface, 50);
       assert.ok(
-        screen.includes(`LONG_${marker}`),
+        screenContains(screen, `LONG_${marker}`),
         `Expected long command output. Got:\n${screen.slice(0, 300)}...`,
       );
       assert.ok(
-        screen.includes("_END"),
+        screenContains(screen, "_END"),
         `Expected full output (not truncated). Got:\n${screen.slice(-300)}`,
       );
     });
@@ -159,7 +160,7 @@ for (const backend of backends) {
 
       const screen = await readScreenAsync(surface, 50);
       assert.ok(
-        screen.includes(`ASYNC_${marker}`),
+        screenContains(screen, `ASYNC_${marker}`),
         `Async read should find marker. Got:\n${screen}`,
       );
     });
@@ -178,8 +179,8 @@ for (const backend of backends) {
       const screen1 = readScreen(s1, 50);
       const screen2 = readScreen(s2, 50);
 
-      assert.ok(screen1.includes(`S1_${m1}`), `Surface 1 missing marker. Got:\n${screen1}`);
-      assert.ok(screen2.includes(`S2_${m2}`), `Surface 2 missing marker. Got:\n${screen2}`);
+      assert.ok(screenContains(screen1, `S1_${m1}`), `Surface 1 missing marker. Got:\n${screen1}`);
+      assert.ok(screenContains(screen2, `S2_${m2}`), `Surface 2 missing marker. Got:\n${screen2}`);
     });
 
     it("writes output to a file and verifies via surface", async () => {
