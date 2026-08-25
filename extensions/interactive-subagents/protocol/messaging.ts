@@ -18,7 +18,7 @@
  * Two things about pi's extension loader shape this module:
  *
  *   1. Each extension file gets its OWN ExtensionAPI, so a spawning worker —
- *      which loads index.ts and subagent-done.ts in one process — has two
+ *      which loads index.ts and child/index.ts in one process, has two
  *      registrars and needs one tool spanning both. Transports therefore live
  *      in a process-global hub keyed per contributor, the same mechanism this
  *      extension already uses for the running-children count.

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { refuseSpawn, describeRefusal, type SpawnEnvironment } from "../spawn-guard.ts";
+import { refuseSpawn, describeRefusal, type SpawnEnvironment } from "../spawn/guard.ts";
 
 const ENV: SpawnEnvironment = {
   permitted: () => ["scout", "worker"],
@@ -11,7 +11,7 @@ const ENV: SpawnEnvironment = {
 
 const env = (over: Partial<SpawnEnvironment> = {}): SpawnEnvironment => ({ ...ENV, ...over });
 
-describe("spawn-guard.ts", () => {
+describe("spawn/guard.ts", () => {
   describe("a permissible spawn", () => {
     it("is not refused", () => {
       assert.equal(refuseSpawn({ agent: "scout" }, env()), null);

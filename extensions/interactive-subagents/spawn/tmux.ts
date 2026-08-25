@@ -260,7 +260,7 @@ export interface PollResult {
 
 /**
  * Interpret an `.exit` sidecar payload (written by the error path in
- * subagent-done.ts). Centralized so both the fast and slow paths in
+ * child/index.ts). Centralized so both the fast and slow paths in
  * pollForExit decode the payload the same way. Clean completions write no
  * sidecar and are detected via the terminal sentinel instead.
  *

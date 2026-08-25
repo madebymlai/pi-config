@@ -13,7 +13,7 @@
  * caller resolves those into a `SpawnEnvironment`, which is what lets the order
  * be tested directly.
  */
-import { PARENT } from "./messaging.ts";
+import { PARENT } from "../protocol/messaging.ts";
 
 export type SpawnRefusal =
   /** No agent named. There is no agentless spawn route. */

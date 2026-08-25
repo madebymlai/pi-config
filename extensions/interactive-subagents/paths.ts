@@ -4,7 +4,7 @@
  * Before this module, four files each computed their own location from
  * `import.meta.url` and navigated relative to it: sandbox.ts reached ".." for
  * sibling extensions, agents.ts reached "agents/", index.ts reached
- * "subagent-done.ts", status.ts reached "config.json". Four independent
+ * the child entry, status.ts reached "config.json". Four independent
  * assumptions about the layout, and moving any file silently changed what its
  * own ".." meant. Those break at runtime, not at compile time, which is the
  * worst way for a path to be wrong.
@@ -41,13 +41,13 @@ export const paths = {
   root: PACKAGE_ROOT,
 
   /** The extension injected with `-e` into every subagent session. */
-  childEntry: join(PACKAGE_ROOT, "subagent-done.ts"),
+  childEntry: join(PACKAGE_ROOT, "child", "index.ts"),
 
   /** Agent role definitions bundled with this package (the first discovery tier). */
   bundledAgents: join(PACKAGE_ROOT, "agents"),
 
   /** A tool extension loaded into a child, by path segments under tools/. */
-  toolExtension: (...segments: string[]) => join(PACKAGE_ROOT, "tools", ...segments),
+  toolExtension: (...segments: string[]) => join(PACKAGE_ROOT, "child", "tools", ...segments),
 
   /**
    * Extensions installed beside this one. This package is not always under

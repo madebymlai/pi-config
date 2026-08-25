@@ -20,7 +20,7 @@ import { readSubagentActivityFile, type ActivityReadResult } from "./activity-re
 import {
   getSubagentActivityFile,
   type SubagentActivityState,
-} from "./activity-schema.ts";
+} from "../protocol/activity.ts";
 import {
   formatElapsedDuration,
   formatTransitionLine,
@@ -30,7 +30,7 @@ import {
   type StatusSnapshotState,
   type SubagentStatusKind,
   type SubagentStatusTransition,
-} from "./status.ts";
+} from "../render/status.ts";
 
 /** How long without a healthy snapshot before a subagent counts as stalled. */
 export const SNAPSHOT_STALLED_AFTER_MS = 60_000;

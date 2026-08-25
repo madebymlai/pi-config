@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { resolveAgentLaunch, RESUME_LAUNCH, listAgents } from "../agents.ts";
+import { resolveAgentLaunch, RESUME_LAUNCH, listAgents } from "../spawn/agents.ts";
 import { withIsolatedAgentEnv, writeAgentFile } from "./support/agent-env.ts";
 
 /** Write one project-tier agent and resolve it, all inside a throwaway env. */

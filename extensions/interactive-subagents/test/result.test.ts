@@ -6,8 +6,8 @@ import {
   describeResult,
   stripResultPreamble,
   usageSegments,
-} from "../result.ts";
-import type { SessionStats } from "../transcript.ts";
+} from "../render/result.ts";
+import type { SessionStats } from "../observe/transcript.ts";
 
 const NO_STATS: SessionStats = {
   model: null,

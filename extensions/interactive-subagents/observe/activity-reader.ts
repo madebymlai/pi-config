@@ -19,7 +19,7 @@ import {
   type SubagentActivityPhase,
   type SubagentActivityScope,
   type SubagentActivityState,
-} from "./activity-schema.ts";
+} from "../protocol/activity.ts";
 
 export type ActivityReadResult =
   | { ok: true; activity: SubagentActivityState }

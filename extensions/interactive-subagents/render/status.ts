@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { paths } from "./paths.ts";
+import { paths } from "../paths.ts";
 
 export const DEFAULT_STATUS_LINE_LIMIT = 4;
 export const MAX_STATUS_NAME_LENGTH = 72;

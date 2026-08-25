@@ -32,7 +32,7 @@ import {
   readScreenAsync,
   closeSurface,
   shellEscape,
-} from "../../tmux.ts";
+} from "../../spawn/tmux.ts";
 
 // Re-export tmux primitives for tests
 export {

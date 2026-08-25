@@ -11,8 +11,8 @@ import {
   mkdirSync,
   unlinkSync,
 } from "node:fs";
-import { renderSubagentWidget } from "./widget.ts";
-import { describeRefusal, refuseSpawn } from "./spawn-guard.ts";
+import { renderSubagentWidget } from "./render/widget.ts";
+import { describeRefusal, refuseSpawn } from "./spawn/guard.ts";
 import {
   describeResult,
   fallbackSummary,
@@ -20,15 +20,15 @@ import {
   stripResultPreamble,
   usageSegments,
   type UsageSeverity,
-} from "./result.ts";
+} from "./render/result.ts";
 import { getAgentConfigDir, paths } from "./paths.ts";
-import { computeToolAllowlist, promptArgs, sandboxArgs, slugify } from "./sandbox.ts";
+import { computeToolAllowlist, promptArgs, sandboxArgs, slugify } from "./spawn/sandbox.ts";
 import {
   listAgents,
   resolveAgentLaunch,
   RESUME_LAUNCH,
   type AgentDefaults,
-} from "./agents.ts";
+} from "./spawn/agents.ts";
 import {
   isMuxAvailable,
   muxUnavailableMessage,
@@ -38,7 +38,7 @@ import {
   pollForExit,
   closeSurface,
   shellEscape,
-} from "./tmux.ts";
+} from "./spawn/tmux.ts";
 
 import {
   countSessionEntryLines,
@@ -48,23 +48,23 @@ import {
   seedSubagentSessionFile,
   summarizeSessionStats,
   type SessionStats,
-} from "./transcript.ts";
-import { readSubagentLoadout, writeSubagentLoadout, type SubagentLoadout } from "./loadout.ts";
-import { readNameRegistry, registerName, resolveNameInRegistry } from "./name-registry.ts";
+} from "./observe/transcript.ts";
+import { readSubagentLoadout, writeSubagentLoadout, type SubagentLoadout } from "./store/loadout.ts";
+import { readNameRegistry, registerName, resolveNameInRegistry } from "./store/name-registry.ts";
 // Only the aggregate formatting and config are still index.ts's business;
 // everything about an individual subagent's status now sits behind liveness.ts.
 import {
   capStatusLines,
   formatStatusAggregate,
   loadStatusConfig,
-} from "./status.ts";
-import { createLiveness, getSubagentActivityFile, type SubagentLiveness } from "./liveness.ts";
+} from "./render/status.ts";
+import { createLiveness, getSubagentActivityFile, type SubagentLiveness } from "./observe/liveness.ts";
 import {
   registerSendMessage,
   type Delivery,
   type MessagingContext,
   type Transport,
-} from "./messaging.ts";
+} from "./protocol/messaging.ts";
 
 /** Absolute path to this extension's directory. https://github.com/nodejs/node/issues/37845 */
 /** How a usage segment's severity is painted. The theme is the caller's, so the mapping is too. */
@@ -266,11 +266,11 @@ interface RunningSubagent {
 const runningSubagents = new Map<string, RunningSubagent>();
 
 // When this extension is loaded inside a subagent that itself spawns children
-// (e.g. a worker delegating to scout/researcher), `subagent-done.ts` runs in the
+// (e.g. a worker delegating to scout/researcher), `child/index.ts` runs in the
 // same process and needs to know whether this session still has children in
 // flight — so it can suppress auto-exit and keep the session open until they all
 // report back. Expose a live count through a process-global symbol that both
-// modules share. (subagent-done.ts reads it; if absent it assumes zero.)
+// modules share. (child/index.ts reads it; if absent it assumes zero.)
 
 // ── Widget management ──
 

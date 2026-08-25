@@ -10,8 +10,8 @@ import {
   getToolExtensionPath,
   slugify,
   SUBAGENT_CONTROL_TOOLS,
-} from "../sandbox.ts";
-import type { SubagentLoadout } from "../loadout.ts";
+} from "../spawn/sandbox.ts";
+import type { SubagentLoadout } from "../store/loadout.ts";
 
 function withTempDir<T>(fn: (dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "sandbox-"));

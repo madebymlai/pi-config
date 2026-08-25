@@ -16,13 +16,13 @@
  */
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { getAgentConfigDir, paths } from "./paths.ts";
-import type { SubagentLoadout } from "./loadout.ts";
+import { getAgentConfigDir, paths } from "../paths.ts";
+import type { SubagentLoadout } from "../store/loadout.ts";
 import { shellEscape } from "./tmux.ts";
 
 /**
  * Tools every subagent keeps regardless of how tightly its role restricts tools.
- * Backed by subagent-done.ts, which is loaded into every subagent session, so
+ * Backed by child/index.ts, which is loaded into every subagent session, so
  * granting these never widens which extensions a child loads.
  */
 export const SUBAGENT_CONTROL_TOOLS = ["send_message"] as const;

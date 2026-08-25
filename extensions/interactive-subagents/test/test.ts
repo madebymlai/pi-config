@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import * as subagentsModule from "../index.ts";
-import { listAgents, resolveAgentLaunch, RESUME_LAUNCH } from "../agents.ts";
-import { computeToolAllowlist, getToolExtensionPath } from "../sandbox.ts";
-import { describeResult } from "../result.ts";
+import { listAgents, resolveAgentLaunch, RESUME_LAUNCH } from "../spawn/agents.ts";
+import { computeToolAllowlist, getToolExtensionPath } from "../spawn/sandbox.ts";
+import { describeResult } from "../render/result.ts";
 import {
   createTestDir,
   restoreEnvVar,
@@ -23,21 +23,21 @@ import {
   getSessionId,
   seedSubagentSessionFile,
   summarizeSessionStats,
-} from "../transcript.ts";
+} from "../observe/transcript.ts";
 import {
   loadoutSidecarPath,
   readSubagentLoadout,
   writeSubagentLoadout,
   type SubagentLoadout,
-} from "../loadout.ts";
+} from "../store/loadout.ts";
 import {
   nameRegistryPath,
   readNameRegistry,
   registerName,
   resolveNameInRegistry,
-} from "../name-registry.ts";
+} from "../store/name-registry.ts";
 
-import { shellEscape } from "../tmux.ts";
+import { shellEscape } from "../spawn/tmux.ts";
 import {
   capStatusLines,
   formatStatusAggregate,
@@ -46,20 +46,20 @@ import {
   loadStatusConfig,
   parseStatusConfig,
   type StatusSnapshot,
-} from "../status.ts";
-import { createSubagentActivityRecorder, writeSubagentActivityFile } from "../activity-recorder.ts";
-import { readSubagentActivityFile } from "../activity-reader.ts";
-import { getSubagentActivityFile } from "../activity-schema.ts";
+} from "../render/status.ts";
+import { createSubagentActivityRecorder, writeSubagentActivityFile } from "../child/activity-recorder.ts";
+import { readSubagentActivityFile } from "../observe/activity-reader.ts";
+import { getSubagentActivityFile } from "../protocol/activity.ts";
 import {
   shouldMarkUserTookOver,
   shouldAutoExitOnAgentEnd,
   findLatestAssistantError,
-} from "../subagent-done.ts";
-import subagentDoneExtension from "../subagent-done.ts";
-import { registerSendMessage, __test__ as messagingTestApi } from "../messaging.ts";
-import { createLiveness } from "../liveness.ts";
+} from "../child/index.ts";
+import subagentDoneExtension from "../child/index.ts";
+import { registerSendMessage, __test__ as messagingTestApi } from "../protocol/messaging.ts";
+import { createLiveness } from "../observe/liveness.ts";
 import { createMockExtensionApi } from "./support/mock-extension-api.ts";
-import { __pollForExitTest__ } from "../tmux.ts";
+import { __pollForExitTest__ } from "../spawn/tmux.ts";
 
 // --- Helpers ---
 
@@ -145,7 +145,7 @@ const TOOL_RESULT = {
 
 // --- Tests ---
 
-describe("session.ts", () => {
+describe("transcript / loadout / name-registry", () => {
   let dir: string;
 
   before(() => {
@@ -753,7 +753,7 @@ describe("subagent discovery", () => {
     // The knowledge-graph tools all come from one flat file in the agent dir.
     assert.ok(getToolExtensionPath("search_graph")?.endsWith("cbmem.ts"));
     assert.ok(getToolExtensionPath("trace_path")?.endsWith("cbmem.ts"));
-    // send_message is not: subagent-done.ts already loads into every subagent,
+    // send_message is not: child/index.ts already loads into every subagent,
     // so mapping it here would pull the whole orchestration extension into a leaf.
     assert.equal(getToolExtensionPath("send_message"), undefined);
   });
@@ -880,7 +880,7 @@ describe("subagent discovery", () => {
     });
   });
 });
-describe("subagent-done.ts", () => {
+describe("child/index.ts", () => {
   describe("shouldMarkUserTookOver", () => {
     it("ignores the initial injected task before the first agent run", () => {
       assert.equal(shouldMarkUserTookOver(false), false);

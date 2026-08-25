@@ -19,7 +19,7 @@ import type {
   SubagentActivityEvent,
   SubagentActivityScope,
   SubagentActivityState,
-} from "./activity-schema.ts";
+} from "../protocol/activity.ts";
 
 export type SubagentShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
 

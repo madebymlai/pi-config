@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createLiveness, SNAPSHOT_STALLED_AFTER_MS } from "../liveness.ts";
-import { SUBAGENT_STATUS_KINDS, SUBAGENT_STATUS_TRANSITIONS } from "../status.ts";
-import { writeSubagentActivityFile } from "../activity-recorder.ts";
-import type { SubagentActivityState } from "../activity-schema.ts";
+import { createLiveness, SNAPSHOT_STALLED_AFTER_MS } from "../observe/liveness.ts";
+import { SUBAGENT_STATUS_KINDS, SUBAGENT_STATUS_TRANSITIONS } from "../render/status.ts";
+import { writeSubagentActivityFile } from "../child/activity-recorder.ts";
+import type { SubagentActivityState } from "../protocol/activity.ts";
 
 /**
  * Reachability analysis over the status machine.

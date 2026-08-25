@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createLiveness, SNAPSHOT_STALLED_AFTER_MS } from "../liveness.ts";
-import { writeSubagentActivityFile } from "../activity-recorder.ts";
-import type { SubagentActivityState } from "../activity-schema.ts";
+import { createLiveness, SNAPSHOT_STALLED_AFTER_MS } from "../observe/liveness.ts";
+import { writeSubagentActivityFile } from "../child/activity-recorder.ts";
+import type { SubagentActivityState } from "../protocol/activity.ts";
 
 function withTempDir<T>(fn: (dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "liveness-"));

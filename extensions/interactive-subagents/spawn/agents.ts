@@ -14,7 +14,7 @@
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { getAgentConfigDir, paths } from "./paths.ts";
+import { getAgentConfigDir, paths } from "../paths.ts";
 
 export type SubagentSessionMode = "standalone" | "lineage-only" | "fork";
 

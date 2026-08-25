@@ -7,7 +7,7 @@ import {
   type Contributor,
   type Delivery,
   type Transport,
-} from "../messaging.ts";
+} from "../protocol/messaging.ts";
 import { createMockExtensionApi } from "./support/mock-extension-api.ts";
 
 /** A transport that claims exactly the names it is given and records what it delivered. */
