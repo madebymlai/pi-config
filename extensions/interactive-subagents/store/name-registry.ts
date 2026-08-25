@@ -9,7 +9,7 @@
  * because only the parent ever registers, and it does so one child at a time.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 export interface NameRegistryEntry {
   /** Absolute path to the subagent's session .jsonl file. */

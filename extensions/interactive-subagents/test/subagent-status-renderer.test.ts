@@ -5,14 +5,7 @@ import {
   readSubagentStatusDetails,
   renderSubagentStatus,
 } from "../render/subagent-status.ts";
-import type { RenderContext } from "../render/theme.ts";
-
-/** Returns its input unchanged, so assertions read as plain strings. */
-const theme = {
-  fg: (_color: string, text: string) => text,
-  bg: (_color: string, text: string) => text,
-  bold: (text: string) => text,
-};
+import { UNPAINTED as theme, type RenderContext } from "../render/theme.ts";
 
 function context(over: Partial<RenderContext> = {}): RenderContext {
   return { theme, expandHint: () => "ctrl+o to expand", expanded: false, width: 60, ...over };

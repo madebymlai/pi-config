@@ -13,7 +13,7 @@
 import { Box, Text } from "@earendil-works/pi-tui";
 import { formatElapsed, stripResultPreamble, usageSegments, type UsageSeverity } from "./result.ts";
 import type { SessionStats } from "../observe/transcript.ts";
-import type { RenderContext, RenderTheme } from "./theme.ts";
+import { asRecord, type RenderContext, type RenderTheme } from "./theme.ts";
 
 /** How much of the context budget is gone, as a colour. */
 const USAGE_TONE = {
@@ -26,7 +26,13 @@ const USAGE_TONE = {
 const COLLAPSED_SUMMARY_LINES = 5;
 
 export interface SubagentResultDetails {
-  name: string;
+  /**
+   * Absent when the payload carried no name. Kept optional rather than defaulted
+   * here because the expanded box gates its follow-up section on whether a name
+   * was actually given: defaulting at read time would make that gate always true
+   * and print a hint addressed to a subagent nobody can reach.
+   */
+  name?: string;
   /** The role it was spawned as, when it was spawned as one. */
   agent?: string;
   /** Non-zero means the process failed, whatever it managed to say first. */
@@ -42,10 +48,12 @@ export interface SubagentResultDetails {
 
 /** Reads a message's untyped details, or null when this is not our message. */
 export function readSubagentResultDetails(details: unknown): SubagentResultDetails | null {
-  if (details == null || typeof details !== "object") return null;
-  const record = details as Record<string, unknown>;
+  const record = asRecord(details);
+  if (!record) return null;
   return {
-    name: typeof record.name === "string" ? record.name : "subagent",
+    // Kept verbatim, empty string included: the original used ?? for display,
+    // which preserves "", and truthiness for the follow-up gate, which rejects it.
+    name: typeof record.name === "string" ? record.name : undefined,
     agent: typeof record.agent === "string" && record.agent ? record.agent : undefined,
     exitCode: typeof record.exitCode === "number" ? record.exitCode : 0,
     errorMessage: typeof record.errorMessage === "string" ? record.errorMessage : "",
@@ -60,11 +68,12 @@ function renderHeader(
   theme: RenderTheme,
   failed: boolean,
   elapsed: string,
-): string {
+) {
+  const displayName = details.name ?? "subagent";
   const icon = failed ? theme.fg("error", "✗") : theme.fg("success", "✓");
   const agentTag = details.agent ? theme.fg("dim", ` (${details.agent})`) : "";
   const modelTag = details.stats?.model ? theme.fg("dim", ` (${details.stats.model})`) : "";
-  const titleSegment = `${icon} ${theme.fg("toolTitle", theme.bold(details.name))}${agentTag}${modelTag} ${theme.fg("dim", "—")} `;
+  const titleSegment = `${icon} ${theme.fg("toolTitle", theme.bold(displayName))}${agentTag}${modelTag} ${theme.fg("dim", "—")} `;
 
   if (failed) {
     // "exit 1" and "the provider errored" call for different responses, so say which.
@@ -83,7 +92,7 @@ export function renderSubagentResult(
   details: SubagentResultDetails,
   content: string,
   { theme, expandHint, expanded, width }: RenderContext,
-): string[] {
+) {
   const failed = details.exitCode !== 0 || !!details.errorMessage;
   const elapsed = details.elapsed != null ? formatElapsed(details.elapsed) : "?";
 
@@ -95,7 +104,7 @@ export function renderSubagentResult(
   }
 
   const summary = stripResultPreamble(content, {
-    name: details.name,
+    name: details.name ?? "subagent",
     elapsedText: elapsed,
     exitCode: details.exitCode,
   });

@@ -12,7 +12,8 @@ import type { RenderTheme } from "./theme.ts";
 /** First line of the task, bounded, for the one-line preview. */
 const TASK_PREVIEW_LIMIT = 100;
 
-function str(args: Record<string, unknown>, key: string): string {
+/** A string argument, or "" when the model has not written it yet. */
+function stringArg(args: Record<string, unknown>, key: string) {
   const value = args[key];
   return typeof value === "string" ? value : "";
 }
@@ -24,20 +25,20 @@ function str(args: Record<string, unknown>, key: string): string {
  * since "Scout (scout)" says nothing the name did not.
  */
 function callHeader(args: Record<string, unknown>, theme: RenderTheme): string {
-  const agentName = str(args, "agent");
-  const name = str(args, "name") || agentName || "(unnamed)";
+  const agentName = stringArg(args, "agent");
+  const name = stringArg(args, "name") || agentName || "(unnamed)";
   const agent = agentName && name !== agentName ? theme.fg("dim", ` (${agentName})`) : "";
-  const cwd = str(args, "cwd");
+  const cwd = stringArg(args, "cwd");
   const cwdHint = cwd ? theme.fg("dim", ` in ${cwd}`) : "";
   return "○ " + theme.fg("toolTitle", theme.bold(name)) + agent + cwdHint;
 }
 
-export function renderSubagentCall(args: Record<string, unknown>, theme: RenderTheme): Text {
+export function renderSubagentCall(args: Record<string, unknown>, theme: RenderTheme) {
   let text = callHeader(args, theme);
 
   // Compact on purpose: this is redrawn on every token of the task as the model
   // writes it, and the full content is one keypress away on the result.
-  const task = str(args, "task");
+  const task = stringArg(args, "task");
   if (task) {
     const firstLine = task.split("\n").find((line) => line.trim()) ?? "";
     const preview =
@@ -57,7 +58,7 @@ export function renderSubagentToolResult(
   details: Record<string, unknown> | null | undefined,
   fallbackText: string,
   theme: RenderTheme,
-): Text {
+) {
   const name = typeof details?.name === "string" ? details.name : "(unnamed)";
 
   // The tool returns as soon as the pane exists; the run's actual outcome

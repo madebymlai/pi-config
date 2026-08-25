@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { Box, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import {
   formatAgentLine,
   NO_AGENTS_MESSAGE,
@@ -21,7 +21,6 @@ import {
   renderSubagentMessage,
 } from "./render/subagent-message.ts";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   readFileSync,
   writeFileSync,
@@ -35,9 +34,6 @@ import {
   describeResult,
   fallbackSummary,
   formatElapsed,
-  stripResultPreamble,
-  usageSegments,
-  type UsageSeverity,
 } from "./render/result.ts";
 import { getAgentConfigDir, paths } from "./paths.ts";
 import { loadStatusConfig } from "./config.ts";
@@ -73,7 +69,7 @@ import { readNameRegistry, registerName, resolveNameInRegistry } from "./store/n
 // Only the aggregate formatting and config are still index.ts's business;
 // everything about an individual subagent's status now sits behind liveness.ts.
 import {
-  formatTransitionLine,
+  formatStatusLine,
   renderStatusDigest,
 } from "./render/status.ts";
 import { createLiveness, getSubagentActivityFile, type SubagentLiveness } from "./observe/liveness.ts";
@@ -85,13 +81,6 @@ import {
 } from "./protocol/messaging.ts";
 
 /** Absolute path to this extension's directory. https://github.com/nodejs/node/issues/37845 */
-/** How a usage segment's severity is painted. The theme is the caller's, so the mapping is too. */
-const USAGE_TONE = {
-  normal: "dim",
-  warning: "warning",
-  critical: "error",
-} as const satisfies Record<UsageSeverity, string>;
-
 /** Injected into the system prompt, so it stays short. */
 const SPAWN_SNIPPET =
   "Spawn a sub-agent in its own pane. Fire and forget: its result arrives later as a steer " +
@@ -447,7 +436,7 @@ function startStatusRefresh(pi: ExtensionAPI) {
       if (kindChanged) shouldRefreshWidget = true;
       // liveness reports the transition; turning it into a sentence is this
       // layer's job, which is what keeps observe/ from importing render/.
-      if (transition) transitionLines.push(formatTransitionLine(running.name, snapshot, transition));
+      if (transition) transitionLines.push(formatStatusLine(running.name, snapshot, transition));
     }
 
     if (shouldRefreshWidget) updateWidget();
@@ -1093,6 +1082,12 @@ function createChildTransports(
   return [steer, resume];
 }
 
+/**
+ * Resolved lazily: keyHint reads pi's global theme state, and only a collapsed
+ * render needs it. See render/theme.ts.
+ */
+const expandHintThunk = () => keyHint("app.tools.expand", "to expand");
+
 export default function subagentsExtension(pi: ExtensionAPI) {
   latestPi = pi;
   // Capture the UI context for widget updates
@@ -1321,7 +1316,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           typeof message.content === "string" ? message.content : "",
           {
             theme,
-            expandHint: () => keyHint("app.tools.expand", "to expand"),
+            expandHint: expandHintThunk,
             expanded: options.expanded,
             width,
           },
@@ -1340,7 +1335,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       render(width: number): string[] {
         return renderSubagentStatus(details, {
           theme,
-          expandHint: () => keyHint("app.tools.expand", "to expand"),
+          expandHint: expandHintThunk,
           expanded: options.expanded,
           width,
         });
@@ -1358,7 +1353,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       render(width: number): string[] {
         return renderSubagentMessage(details, {
           theme,
-          expandHint: () => keyHint("app.tools.expand", "to expand"),
+          expandHint: expandHintThunk,
           expanded: options.expanded,
           width,
         });

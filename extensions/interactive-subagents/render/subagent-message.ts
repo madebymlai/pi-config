@@ -6,7 +6,7 @@
  * unblock the subagent.
  */
 import { Box, Text } from "@earendil-works/pi-tui";
-import type { RenderContext } from "./theme.ts";
+import { asRecord, type RenderContext } from "./theme.ts";
 
 export interface SubagentMessageDetails {
   /** Addressable name, which is what a reply must be sent to. */
@@ -18,8 +18,8 @@ export interface SubagentMessageDetails {
 
 /** Reads a message's untyped details, or null when this is not our message. */
 export function readSubagentMessageDetails(details: unknown): SubagentMessageDetails | null {
-  if (details == null || typeof details !== "object") return null;
-  const record = details as Record<string, unknown>;
+  const record = asRecord(details);
+  if (!record) return null;
   return {
     name: typeof record.name === "string" ? record.name : "subagent",
     agent: typeof record.agent === "string" && record.agent ? record.agent : undefined,
@@ -30,7 +30,7 @@ export function readSubagentMessageDetails(details: unknown): SubagentMessageDet
 export function renderSubagentMessage(
   details: SubagentMessageDetails,
   { theme, expandHint, expanded, width }: RenderContext,
-): string[] {
+) {
   const agentTag = details.agent ? theme.fg("dim", ` (${details.agent})`) : "";
   const icon = theme.fg("accent", "↑");
   const header = `${icon} ${theme.fg("toolTitle", theme.bold(details.name))}${agentTag} ${theme.fg("dim", "— waiting on your reply")}`;

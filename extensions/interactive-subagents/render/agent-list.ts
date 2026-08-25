@@ -9,28 +9,25 @@
  * One formatter, given a theme that either paints or does not.
  */
 import type { ListedAgentDefinition } from "../spawn/agents.ts";
-import type { RenderTheme } from "./theme.ts";
-
-/** Returns text unchanged, for the plain-text rendering. */
-const UNPAINTED: RenderTheme = {
-  fg: (_color, text) => text,
-  bg: (_color, text) => text,
-  bold: (text) => text,
-};
+import { asRecord, UNPAINTED, type RenderTheme } from "./theme.ts";
 
 export const NO_AGENTS_MESSAGE = "No subagent definitions found.";
 
 /** Reads the agent list off a tool result's untyped details. */
 export function readListedAgents(details: unknown): ListedAgentDefinition[] {
-  if (details == null || typeof details !== "object") return [];
-  const agents = (details as Record<string, unknown>).agents;
-  return Array.isArray(agents) ? (agents as ListedAgentDefinition[]) : [];
+  const agents = asRecord(details)?.agents;
+  if (!Array.isArray(agents)) return [];
+  // A line needs a name; anything without one has nothing to render.
+  return agents.filter(
+    (agent): agent is ListedAgentDefinition =>
+      asRecord(agent) != null && typeof (agent as ListedAgentDefinition).name === "string",
+  );
 }
 
 export function formatAgentLine(
   agent: Pick<ListedAgentDefinition, "name" | "source" | "model" | "description">,
   options: { theme?: RenderTheme; bullet: string },
-): string {
+) {
   const theme = options.theme ?? UNPAINTED;
   // A project agent shadows a global one by name, so which tier it came from is
   // the difference between two identically named profiles.

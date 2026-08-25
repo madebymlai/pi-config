@@ -41,7 +41,6 @@ import { shellEscape } from "../spawn/tmux.ts";
 import {
   renderStatusDigest,
   formatStatusLine,
-  formatTransitionLine,
 } from "../render/status.ts";
 import { loadStatusConfig } from "../config.ts";
 import type { StatusSnapshot } from "../observe/status-snapshot.ts";
@@ -603,8 +602,7 @@ describe("status.ts", () => {
       longName,
       snapshot({ kind: "stalled", elapsedText: "4m", snapshotProblemText: "3m" }),
     );
-    const recovered = formatTransitionLine(
-      longName,
+    const recovered = formatStatusLine(longName,
       snapshot({ kind: "active", elapsedText: "5m", activityLabel: "write", activeDurationText: "1s" }),
       "recovered",
     );
@@ -620,8 +618,7 @@ describe("status.ts", () => {
       "Worker",
       snapshot({ kind: "waiting", elapsedText: "5m", waitingDurationText: "2m" }),
     );
-    const recoveredLine = formatTransitionLine(
-      "Worker",
+    const recoveredLine = formatStatusLine("Worker",
       snapshot({ kind: "active", elapsedText: "7m", activityLabel: "bash", activeDurationText: "1s" }),
       "recovered",
     );

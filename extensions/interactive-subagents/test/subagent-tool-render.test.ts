@@ -1,13 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { UNPAINTED as theme } from "../render/theme.ts";
 import { renderSubagentCall, renderSubagentToolResult } from "../render/subagent-tool.ts";
 import { formatAgentLine, NO_AGENTS_MESSAGE } from "../render/agent-list.ts";
-
-const theme = {
-  fg: (_c: string, t: string) => t,
-  bg: (_c: string, t: string) => t,
-  bold: (t: string) => t,
-};
 
 const call = (args: Record<string, unknown>) => renderSubagentCall(args, theme).render(120).join("\n");
 

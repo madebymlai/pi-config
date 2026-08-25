@@ -52,9 +52,8 @@ function formatStalledDetail(snapshot: StatusSnapshot): string {
   return `stalled${duration}${detail}`;
 }
 
-export function formatStatusLine(name: string, snapshot: StatusSnapshot): string {
-  const boundedName = normalizeStatusName(name);
-
+/** The line for a status, with the name already bounded by the caller. */
+function formatPlainStatusLine(boundedName: string, snapshot: StatusSnapshot) {
   if (snapshot.kind === "starting") {
     const label = snapshot.statusLabel ? ` (${snapshot.statusLabel})` : "";
     return boundStatusLine(`${boundedName} running ${snapshot.elapsedText}, starting${label}.`);
@@ -76,19 +75,28 @@ export function formatStatusLine(name: string, snapshot: StatusSnapshot): string
   return boundStatusLine(`${boundedName} running ${snapshot.elapsedText}, ${formatStalledDetail(snapshot)}.`);
 }
 
-export function formatTransitionLine(
+/**
+ * One status line, optionally announcing that a subagent came back.
+ *
+ * A "stalled" transition renders exactly as the plain status line, because the
+ * line already says it is stalled; only a recovery needs a lead-in. That is why
+ * this is one function rather than two: formatStatusLine was a separate export
+ * with no caller outside its own module and the tests.
+ */
+export function formatStatusLine(
   name: string,
   snapshot: StatusSnapshot,
-  transition: Exclude<SubagentStatusTransition, null>,
-): string {
+  transition: SubagentStatusTransition = null,
+) {
   const boundedName = normalizeStatusName(name);
 
   if (transition === "recovered") {
-    const detail = snapshot.kind === "waiting" ? formatWaitingDetail(snapshot) : formatActiveDetail(snapshot);
+    const detail =
+      snapshot.kind === "waiting" ? formatWaitingDetail(snapshot) : formatActiveDetail(snapshot);
     return boundStatusLine(`${boundedName} running ${snapshot.elapsedText}, recovered; ${detail}.`);
   }
 
-  return formatStatusLine(boundedName, snapshot);
+  return formatPlainStatusLine(boundedName, snapshot);
 }
 
 /**

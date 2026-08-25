@@ -4,13 +4,7 @@ import {
   readSubagentMessageDetails,
   renderSubagentMessage,
 } from "../render/subagent-message.ts";
-import type { RenderContext } from "../render/theme.ts";
-
-const theme = {
-  fg: (_c: string, t: string) => t,
-  bg: (_c: string, t: string) => t,
-  bold: (t: string) => t,
-};
+import { UNPAINTED as theme, type RenderContext } from "../render/theme.ts";
 
 const context = (over: Partial<RenderContext> = {}): RenderContext => ({
   theme, expandHint: () => "ctrl+o to expand", expanded: false, width: 60, ...over,

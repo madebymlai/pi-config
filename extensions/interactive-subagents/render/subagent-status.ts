@@ -6,7 +6,7 @@
  * message body beside it cannot disagree about which subagents are shown.
  */
 import { Box, Text, truncateToWidth } from "@earendil-works/pi-tui";
-import type { RenderContext } from "./theme.ts";
+import { asRecord, type RenderContext } from "./theme.ts";
 
 export interface SubagentStatusDetails {
   /** Already capped to the configured limit by renderStatusDigest. */
@@ -17,8 +17,8 @@ export interface SubagentStatusDetails {
 
 /** Reads a message's untyped details, or null when this is not our message. */
 export function readSubagentStatusDetails(details: unknown): SubagentStatusDetails | null {
-  if (details == null || typeof details !== "object") return null;
-  const record = details as Record<string, unknown>;
+  const record = asRecord(details);
+  if (!record) return null;
   const lines = Array.isArray(record.lines) ? (record.lines as string[]) : [];
   const overflow = typeof record.overflow === "number" ? record.overflow : 0;
   // Nothing to say is not the same as a message we cannot render.
@@ -29,7 +29,7 @@ export function readSubagentStatusDetails(details: unknown): SubagentStatusDetai
 export function renderSubagentStatus(
   details: SubagentStatusDetails,
   { theme, expandHint, expanded, width }: RenderContext,
-): string[] {
+) {
   const lineWidth = Math.max(0, width - 6);
   const contentLines = [
     `${theme.fg("accent", "•")} ${theme.fg("toolTitle", theme.bold("Subagent status"))}`,

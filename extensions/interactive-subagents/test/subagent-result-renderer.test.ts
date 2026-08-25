@@ -5,24 +5,23 @@ import {
   renderSubagentResult,
   type SubagentResultDetails,
 } from "../render/subagent-result.ts";
-import type { RenderContext } from "../render/theme.ts";
+import { UNPAINTED as theme, type RenderContext } from "../render/theme.ts";
 import type { SessionStats } from "../observe/transcript.ts";
-
-const theme = {
-  fg: (_c: string, t: string) => t,
-  bg: (_c: string, t: string) => t,
-  bold: (t: string) => t,
-};
 
 const context = (over: Partial<RenderContext> = {}): RenderContext => ({
   theme, expandHint: () => "ctrl+o to expand", expanded: false, width: 100, ...over,
 });
 
-const STATS = {
-  model: "claude-opus-5", toolCount: 7, inputTokens: 1_234, outputTokens: 567,
-  cacheReadTokens: 890, cacheWriteTokens: 12, costUsd: 0.34,
-  contextTokens: 90_000, contextLimit: 200_000,
-} as unknown as SessionStats;
+const STATS: SessionStats = {
+  model: "claude-opus-5",
+  toolCount: 7,
+  inputTokens: 1_234,
+  outputTokens: 567,
+  cacheReadTokens: 890,
+  cacheWriteTokens: 12,
+  contextTokens: 90_000,
+  cost: 0.34,
+};
 
 const details = (over: Partial<SubagentResultDetails> = {}): SubagentResultDetails => ({
   name: "Worker", agent: "worker", exitCode: 0, errorMessage: "",
@@ -86,6 +85,16 @@ describe("render/subagent-result.ts", () => {
     it("shows the model when the stats name one", () => {
       assert.match(renderSubagentResult(details(), "", context()).join("\n"), /claude-opus-5/);
     });
+
+    it("reports tokens and cost on the usage line", () => {
+      const body = renderSubagentResult(details(), "", context()).join("\n");
+      assert.match(body, /↑1\.2k/, "input tokens");
+      assert.match(body, /↓567/, "output tokens");
+      assert.match(body, /\$0\.340/, "cost");
+      // The gauge shows a percentage because the model's window is known;
+      // an unrecognised model falls back to a bare token count.
+      assert.match(body, /45\.0%\/200k/, "context gauge");
+    });
   });
 
   describe("what it said", () => {
@@ -103,6 +112,27 @@ describe("render/subagent-result.ts", () => {
       assert.match(body, /summary line 8/);
       assert.doesNotMatch(body, /more lines/);
       assert.doesNotMatch(body, /to expand/);
+    });
+
+    it("truncates a summary line that is wider than the box", () => {
+      // Distinct from the 5-line collapse cap: this is per-line width.
+      const wide = "z".repeat(400);
+      const body = renderSubagentResult(details(), wide, context({ width: 40, expanded: true })).join("\n");
+      assert.ok(!body.includes("z".repeat(60)), "a long line should not run past the box");
+      assert.match(body, /z{20,}/, "but it should still show what fits");
+    });
+
+    it("omits the follow-up section entirely when there is nothing to follow up to", () => {
+      // The gate reads the raw name, so a nameless payload gets no hint
+      // addressed to a subagent nobody can reach.
+      const body = renderSubagentResult(
+        { name: undefined, agent: undefined, exitCode: 0, errorMessage: "", elapsed: 1, stats: null,
+          sessionFile: undefined },
+        "done",
+        context({ expanded: true }),
+      ).join("\n");
+      assert.doesNotMatch(body, /Follow up/);
+      assert.doesNotMatch(body, /Session file/);
     });
 
     it("gives the reader the call that continues the conversation", () => {

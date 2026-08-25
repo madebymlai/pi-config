@@ -6,8 +6,7 @@
  * launch. It is what makes resuming a finished subagent possible: the resume
  * path reconstructs the original launch from here rather than guessing.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 /**
  * A snapshot of everything needed to reconstruct a subagent's sandbox when its

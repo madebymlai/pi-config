@@ -8,8 +8,7 @@
  * Nothing here writes. Creating a subagent's initial session file is a launch
  * concern and lives in spawn/seed-session.ts.
  */
-import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, openSync, readFileSync, readSync } from "node:fs";
 
 export interface SessionEntry {
   type: string;

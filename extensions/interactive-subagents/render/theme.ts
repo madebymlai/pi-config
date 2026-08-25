@@ -35,3 +35,21 @@ export interface RenderContext {
   /** Total columns available, borders included. */
   width: number;
 }
+
+/**
+ * A message's details as a readable record, or null when it is not one.
+ *
+ * Every renderer needs this before it can look at a field: pi hands details
+ * through as unknown, and a message that is not ours can be anything at all.
+ */
+export function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value == null || typeof value !== "object") return null;
+  return value as Record<string, unknown>;
+}
+
+/** A theme that paints nothing, for plain-text rendering and for tests. */
+export const UNPAINTED: RenderTheme = {
+  fg: (_color, text) => text,
+  bg: (_color, text) => text,
+  bold: (text) => text,
+};
