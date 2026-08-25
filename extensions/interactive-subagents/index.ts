@@ -3,6 +3,12 @@ import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { Box, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import {
+  formatAgentLine,
+  NO_AGENTS_MESSAGE,
+  readListedAgents,
+} from "./render/agent-list.ts";
+import { renderSubagentCall, renderSubagentToolResult } from "./render/subagent-tool.ts";
+import {
   readSubagentResultDetails,
   renderSubagentResult,
 } from "./render/subagent-result.ts";
@@ -1214,64 +1220,16 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       },
 
       renderCall(args, theme) {
-        const partialArgs = args as Record<string, unknown>;
-        const agentName =
-          typeof partialArgs.agent === "string" && partialArgs.agent ? partialArgs.agent : "";
-        const name =
-          typeof partialArgs.name === "string" && partialArgs.name
-            ? partialArgs.name
-            : agentName || "(unnamed)";
-        const task = typeof partialArgs.task === "string" ? partialArgs.task : "";
-        // Only show the agent tag separately when a distinct cosmetic name was given.
-        const agent =
-          agentName && name !== agentName ? theme.fg("dim", ` (${agentName})`) : "";
-        const cwdHint = typeof partialArgs.cwd === "string" && partialArgs.cwd
-          ? theme.fg("dim", ` in ${partialArgs.cwd}`)
-          : "";
-        let text =
-          "○ " +
-          theme.fg("toolTitle", theme.bold(name)) +
-          agent +
-          cwdHint;
-
-        // Show a one-line task preview. renderCall is called repeatedly as the
-        // LLM generates tool arguments, so args.task grows token by token.
-        // We keep it compact here — Ctrl+O on renderResult expands the full content.
-        if (task) {
-          const firstLine = task.split("\n").find((l: string) => l.trim()) ?? "";
-          const preview = firstLine.length > 100 ? firstLine.slice(0, 100) + "…" : firstLine;
-          if (preview) {
-            text += "\n" + theme.fg("toolOutput", preview);
-          }
-          const totalLines = task.split("\n").length;
-          if (totalLines > 1) {
-            text += theme.fg("muted", ` (${totalLines} lines)`);
-          }
-        }
-
-        return new Text(text, 0, 0);
+        return renderSubagentCall(args as Record<string, unknown>, theme);
       },
 
       renderResult(result, _opts, theme) {
-        const details = result.details as any;
-        const name = details?.name ?? "(unnamed)";
-
-        // "Started" result — tool returned immediately
-        if (details?.status === "started") {
-          return new Text(
-            theme.fg("accent", "⟳") +
-              " " +
-              theme.fg("toolTitle", theme.bold(name)) +
-              theme.fg("dim", " — started"),
-            0,
-            0,
-          );
-        }
-
-        // Fallback (shouldn't happen)
         const first = result.content[0];
-        const text = first?.type === "text" ? first.text : "";
-        return new Text(theme.fg("dim", text), 0, 0);
+        return renderSubagentToolResult(
+          result.details as Record<string, unknown> | null,
+          first?.type === "text" ? first.text : "",
+          theme,
+        );
       },
     });
 
@@ -1293,17 +1251,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
         if (list.length === 0) {
           return {
-            content: [{ type: "text", text: "No subagent definitions found." }],
+            content: [{ type: "text", text: NO_AGENTS_MESSAGE }],
             details: { agents: [] },
           };
         }
 
-        const lines = list.map((a) => {
-          const badge = a.source === "project" ? " (project)" : "";
-          const desc = a.description ? ` — ${a.description}` : "";
-          const model = a.model ? ` [${a.model}]` : "";
-          return `• ${a.name}${badge}${model}${desc}`;
-        });
+        const lines = list.map((a) => formatAgentLine(a, { bullet: "• " }));
 
         return {
           content: [{ type: "text", text: lines.join("\n") }],
@@ -1312,17 +1265,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       },
 
       renderResult(result, _opts, theme) {
-        const details = result.details as any;
-        const agents = details?.agents ?? [];
+        const agents = readListedAgents(result.details);
         if (agents.length === 0) {
-          return new Text(theme.fg("dim", "No subagent definitions found."), 0, 0);
+          return new Text(theme.fg("dim", NO_AGENTS_MESSAGE), 0, 0);
         }
-        const lines = agents.map((a: any) => {
-          const badge = a.source === "project" ? theme.fg("accent", " (project)") : "";
-          const desc = a.description ? theme.fg("dim", ` — ${a.description}`) : "";
-          const model = a.model ? theme.fg("dim", ` [${a.model}]`) : "";
-          return `  ${theme.fg("toolTitle", theme.bold(a.name))}${badge}${model}${desc}`;
-        });
+        const lines = agents.map((a) =>
+          formatAgentLine(a, { theme, bullet: "  " }),
+        );
         return new Text(lines.join("\n"), 0, 0);
       },
     });
