@@ -27,11 +27,23 @@ const EXA_ENDPOINT = "https://api.exa.ai/search";
 const DEFAULT_COUNT = 8;
 const MAX_COUNT = 25;
 
-/** Exa's own taxonomy; anything else is rejected by the API. */
+/**
+ * Exa's category taxonomy. Validated here because the API does NOT validate it:
+ * an unrecognised category is silently ignored and the search runs unfiltered,
+ * so a typo would degrade results with no error. Failing loudly is the whole
+ * point of this list.
+ *
+ * "research paper" and "github" are absent from Exa's published reference but
+ * verified working — across unrelated queries, github returned only github.com
+ * and research paper returned only journals and preprint hosts. Re-check them
+ * if results ever stop looking category-shaped.
+ */
 const CATEGORIES = [
 	"company",
 	"publication",
+	"research paper",
 	"news",
+	"github",
 	"personal site",
 	"financial report",
 	"people",
@@ -189,7 +201,7 @@ export default function (pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Write the query as a description of the page you want ('blog post comparing X and Y performance'), not as keywords. This is a neural index, so Google operators such as quotes, minus signs, and site: do nothing.",
 			"Use one web_search tool call per search angle instead of batching multiple searches into one call.",
-			"Prefer the category filter over wording the query to imply a source type: 'publication' for papers, 'news' for reporting, 'company' for vendor pages.",
+			"Prefer the category filter over wording the query to imply a source type. It is a strong filter: the same query under 'github' returns only repositories, under 'research paper' only journals, under 'company' only vendor sites.",
 			"Results are not billed individually, but they do consume context. Raise count when a search needs breadth; lower it when only the top hit matters.",
 		],
 
@@ -214,7 +226,7 @@ export default function (pi: ExtensionAPI) {
 					CATEGORIES.map((c) => Type.Literal(c)),
 					{
 						description:
-							"Restrict to a kind of page. Use 'publication' for papers and specs, 'news' for reporting.",
+							"Restrict to a kind of page: 'research paper' or 'publication' for papers and specs, 'github' for repositories and source, 'news' for reporting, 'company' for vendor pages.",
 					},
 				),
 			),
