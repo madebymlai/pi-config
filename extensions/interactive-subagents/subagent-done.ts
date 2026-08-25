@@ -1,22 +1,23 @@
 /**
  * Extension loaded into sub-agents.
  * - Shows agent identity + available tools as a styled widget above the editor (toggle with Ctrl+Alt+O)
- * - Provides an `ask_question` tool for asking the parent orchestrator a question
+ * - Contributes the upward transport behind `send_message`, so this session can
+ *   reach the orchestrator that spawned it
  *
  * Subagents do NOT self-terminate via a tool. Auto-exit agents shut down
  * automatically when their agent loop ends (see the `agent_end` handler);
  * interactive agents end when the human exits the pane.
  *
- * `ask_question` keeps the session OPEN: it writes a `${sessionFile}.ask`
+ * Messaging the parent keeps the session OPEN: it writes a `${sessionFile}.ask`
  * signal the parent's watcher picks up, parks the session in a "waiting" state
  * (auto-exit is suppressed for that turn via `awaitingAnswer`), and the parent
- * replies with subagent_message — which lands as the subagent's next turn.
+ * replies with send_message — which lands as the subagent's next turn.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
 import { writeFileSync } from "node:fs";
 import { createSubagentActivityRecorder } from "./activity.ts";
+import { PARENT, registerSendMessage } from "./messaging.ts";
 
 export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
   return agentStarted;
@@ -178,7 +179,7 @@ export default function (pi: ExtensionAPI) {
 
   let userTookOver = false;
   let agentStarted = false;
-  // Set when ask_question is called; suppresses auto-exit so the session stays
+  // Set when the parent is messaged; suppresses auto-exit so the session stays
   // open while it waits for the orchestrator's reply. Cleared when the reply
   // lands — on `input` (covers a reply steered into the current run) and on
   // `agent_start` (covers a reply that starts a fresh turn after parking).
@@ -197,7 +198,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("input", () => {
     recorder.input();
     // A submitted message is the orchestrator's (or a human's) reply — the
-    // pending ask_question has been answered, however it was delivered. Clear
+    // pending question has been answered, however it was delivered. Clear
     // here, not only on agent_start, because a reply steered in *mid-run* is
     // absorbed into the current run (pi's `steer` behavior injects it before
     // the next LLM call): no new agent_start fires, so without this the flag
@@ -217,7 +218,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_start", () => {
     agentStarted = true;
-    // A new turn is starting — any pending ask_question has now been answered
+    // A new turn is starting — any pending question has now been answered
     // (or superseded), so let auto-exit resume normally when this turn ends.
     awaitingAnswer = false;
     recorder.agentStart();
@@ -226,7 +227,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_end", (event, ctx) => {
     const messages = (event as any).messages as any[] | undefined;
     // Never shut down while this session still has work in flight:
-    //  - awaitingAnswer: an ask_question is pending the orchestrator's reply.
+    //  - awaitingAnswer: a question is pending the orchestrator's reply.
     //  - runningChildrenCount(): this subagent spawned its own children and is
     //    waiting for their results (delivered as steered turns). Exiting now
     //    would strand those children and drop their results.
@@ -329,71 +330,38 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
-    name: "ask_question",
-    label: "ask_question",
-    description:
-      "Ask the orchestrator (the parent agent that spawned you) a single question and pause until they reply. " +
-      "Use this when requirements are ambiguous, a decision would materially affect your work, you're blocked, " +
-      "or you need information or confirmation only the orchestrator has. Prefer asking over guessing. " +
-      "Your session stays open while you wait — the answer arrives as your next message, then you continue. " +
-      "Ask exactly one question per call; make separate calls for unrelated questions.",
-    promptSnippet:
-      "Use this tool to ask the orchestrator one clarifying, missing-requirement, preference, or decision question before continuing — instead of guessing.",
-    promptGuidelines: [
-      "Ask exactly one question per tool call.",
-      "If you need answers to multiple things, make separate ask_question calls instead of bundling them.",
-      "Prefer this tool over guessing when requirements, preferences, or implementation choices are unclear.",
-      "Use it when multiple valid paths exist and the right one depends on the orchestrator's intent.",
-      "Give enough context in the question that the orchestrator can answer without re-reading your whole task.",
-      "After asking, stop and wait — the reply will arrive as your next message.",
-    ],
-    parameters: Type.Object({
-      question: Type.String({
-        description:
-          "The single freeform question to ask the orchestrator. Include enough context to answer it directly.",
-      }),
-    }),
-    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const sessionFile = process.env.PI_SUBAGENT_SESSION;
-      if (!sessionFile) {
-        throw new Error(
-          "ask_question is only available in subagent contexts. " +
-            "PI_SUBAGENT_SESSION environment variable is not set.",
+  // The upward half of send_message. `parent` is the only recipient reachable
+  // this way; a worker that can also spawn contributes the downward transports
+  // from index.ts, and both land on one tool in that process.
+  registerSendMessage(pi, "parent", [
+    {
+      known: () => (process.env.PI_SUBAGENT_SESSION ? [PARENT] : []),
+
+      deliver(to, message) {
+        if (to !== PARENT) return null;
+
+        const sessionFile = process.env.PI_SUBAGENT_SESSION;
+        // Not spawned as a subagent, so there is no parent. Pass rather than
+        // throw: the router reports no-parent, and a top-level session gets a
+        // result it can act on instead of an aborted turn.
+        if (!sessionFile) return null;
+
+        // Keep the session open: suppress auto-exit for this turn and park in
+        // the "waiting" phase. The parent's watcher picks up the `.ask` signal
+        // and notifies the orchestrator, who replies with send_message.
+        awaitingAnswer = true;
+        recorder.askQuestion();
+        writeFileSync(
+          `${sessionFile}.ask`,
+          JSON.stringify({
+            name: process.env.PI_SUBAGENT_NAME ?? "subagent",
+            agent: process.env.PI_SUBAGENT_AGENT ?? "",
+            question: message,
+          }),
         );
-      }
 
-      // Keep the session open: suppress auto-exit for this turn and park in the
-      // "waiting" phase. The parent's watcher picks up the `.ask` signal and
-      // notifies the orchestrator, who replies via subagent_message.
-      awaitingAnswer = true;
-      recorder.askQuestion();
-      const askData = {
-        name: process.env.PI_SUBAGENT_NAME ?? "subagent",
-        agent: process.env.PI_SUBAGENT_AGENT ?? "",
-        question: params.question,
-      };
-      writeFileSync(`${sessionFile}.ask`, JSON.stringify(askData));
-
-      return {
-        content: [
-          {
-            type: "text",
-            text:
-              "Question sent to the orchestrator. Stop here and wait — do not continue working or " +
-              "assume an answer. Their reply will arrive as your next message.",
-          },
-        ],
-        details: { question: params.question },
-      };
+        return { status: "asked" };
+      },
     },
-
-    renderCall(args, theme) {
-      const text =
-        theme.fg("toolTitle", theme.bold("ask_question ")) +
-        theme.fg("muted", String((args as any).question ?? ""));
-      return new Text(text, 0, 0);
-    },
-  });
-
+  ]);
 }

@@ -58,7 +58,7 @@ export type Delivery =
 
 export interface Transport {
   /** Recipients this transport can reach right now. Used only to explain an unknown name. */
-  known(): string[];
+  known(ctx: MessagingContext): string[];
   /**
    * Deliver to `to`, or return null to pass — null means "not a recipient I
    * serve", never "I tried and failed". A transport that owns the name but
@@ -114,7 +114,7 @@ async function route(to: string, message: string, ctx: MessagingContext): Promis
 
   const known: string[] = [];
   for (const transport of transports) {
-    for (const name of transport.known()) if (!known.includes(name)) known.push(name);
+    for (const name of transport.known(ctx)) if (!known.includes(name)) known.push(name);
   }
   return { status: "unknown-target", known };
 }

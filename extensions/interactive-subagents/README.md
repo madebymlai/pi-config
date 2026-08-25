@@ -30,9 +30,8 @@ export PI_SUBAGENT_SHELL_READY_DELAY_MS=2500   # default: 500
 | Tool | Description |
 | --- | --- |
 | `subagent` | Spawn a sub-agent in a dedicated tmux pane (async) |
-| `subagent_message` | Message a sub-agent by name — steers it if running, resumes its session if finished |
+| `send_message` | Message any agent in this lineage by name — `"parent"` for the one that spawned you, a sub-agent's name to steer it if running or resume it if finished |
 | `subagents_list` | List available agent definitions |
-| `ask_question` | *(sub-agent sessions only)* Ask the orchestrator a question and wait for the reply |
 
 There is also a `/subagent <agent> <task>` command for spawning directly.
 
@@ -53,24 +52,30 @@ subagent({ agent: "worker", name: "dark-mode", task: "Implement the dark mode to
 
 ### Messaging
 
-`subagent_message` is addressed **by name only**. Names are unique per session and persist after a sub-agent finishes, so the same name works either way:
+`send_message` is addressed **by name only** — one namespace covering both directions, with `"parent"` reserved for the agent that spawned you. Names are unique per session and persist after a sub-agent finishes, so the same name works either way:
 
 ```typescript
-subagent_message({ name: "scout", message: "Also check the auth middleware" });
+send_message({ to: "scout", message: "Also check the auth middleware" });
+send_message({ to: "parent", message: "Should I use the v1 or v2 endpoint?" });
 ```
 
-- **Running** — the message is typed into the live pane (newlines flattened) and picked up at the next turn boundary. The call returns immediately; the eventual completion still arrives as a steer message.
-- **Finished** — the session is resumed with the message as the follow-up task, like a fresh spawn: fire-and-forget, always autonomous, result steered back later. The resumed run reclaims its original name.
+- **Running sub-agent** — the message is typed into the live pane (newlines flattened) and picked up at the next turn boundary. The call returns immediately; the eventual completion still arrives as a steer message.
+- **Finished sub-agent** — the session is resumed with the message as the follow-up task, like a fresh spawn: fire-and-forget, always autonomous, result steered back later. The resumed run reclaims its original name.
+- **`"parent"`** — see [Messaging the orchestrator](#messaging-the-orchestrator) below. Available only inside a sub-agent session; a top-level session is told it has no parent.
+
+The recipient is always required. There is no default direction, so a message can never silently reach the wrong agent — and because `"parent"` is reserved, no sub-agent can be spawned under a name that would shadow it.
+
+Which recipients a session can reach follows from which extensions it loads, not from a runtime check: a top-level session reaches its children, a leaf sub-agent reaches its parent, and a sub-agent that can itself spawn reaches both through the same tool.
 
 Every spawn records name → session file in `artifacts/<sessionId>/subagent-registry.json`, so names stay addressable across pi restarts. A nested sub-agent that spawns children gets its own registry keyed by its own session id. Resume is refused with a clear error (listing known names) if the name isn't registered, the session file is gone, or the session predates sandboxed resume.
 
 **Resume replays the original sandbox.** At spawn time the fully-resolved loadout — tool allowlist, backing extensions, model, thinking level, system prompt, spawn whitelist, cwd — is snapshotted to `<session>.loadout.json`. Resume rebuilds the exact same restricted process from that snapshot rather than relaunching unrestricted.
 
-### ask_question
+### Messaging the orchestrator
 
-A sub-agent can ask its orchestrator a single freeform question when requirements are ambiguous or a decision materially affects the work. The session **stays open** (parked as `waiting`) instead of exiting; the parent is notified with the sub-agent's name, replies via `subagent_message({ name, message })`, and the reply arrives as the sub-agent's next turn. Parallel questions are supported — each waiting sub-agent has its own name.
+A sub-agent uses `send_message({ to: "parent", … })` when requirements are ambiguous or a decision materially affects the work. The session **stays open** (parked as `waiting`) instead of exiting; the parent is notified with the sub-agent's name, replies with `send_message({ to: <that name>, … })`, and the reply arrives as the sub-agent's next turn. Parallel questions are supported — each waiting sub-agent has its own name.
 
-If the reply arrives while the sub-agent is still mid-turn, it is absorbed into the current turn — either way the question is marked answered and the session exits normally when the work is done. If the parent never replies, the pane stays open until a human closes it. Only available inside sub-agent sessions.
+If the reply arrives while the sub-agent is still mid-turn, it is absorbed into the current turn — either way the question is marked answered and the session exits normally when the work is done. If the parent never replies, the pane stays open until a human closes it.
 
 ## Bundled agents
 
@@ -109,7 +114,7 @@ You are a specialized agent that does X...
 | `model` | string | Default model |
 | `thinking` | string | `minimal`, `low`, `medium`, or `high` |
 | `tools` | string | Strict tool allowlist. Built-ins: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`. Extension-backed: `web_search`, `web_fetch`, `safe_bash`, `video_extract`, `youtube_search`, `google_image_search`. Only the extensions backing the listed tools are loaded into the child |
-| `subagent_agents` | string | Comma-separated agent names this agent may spawn. **Presence of this field grants the spawning toolset** (`subagent`, `subagent_message`, `subagents_list`) and restricts spawn targets to the list. Omit it and the agent cannot spawn at all |
+| `subagent_agents` | string | Comma-separated agent names this agent may spawn. **Presence of this field grants the spawning toolset** (`subagent`, `subagents_list`) and restricts spawn targets to the list. Omit it and the agent cannot spawn at all |
 | `skills` | string | Comma-separated skill names to auto-load |
 | `session-mode` | string | `standalone` (default), `lineage-only`, or `fork` — see below |
 | `system-prompt` | string | `append` or `replace`: pass the body as the child's `--append-system-prompt` / `--system-prompt`. Omit and the body is prepended to the task prompt instead |
@@ -132,7 +137,7 @@ With `auto-exit: true`, the session shuts down when the agent's turn ends — th
 Notes:
 
 - **Manual input does not strand an auto-exit sub-agent.** If a human types into the pane, the session still closes once that turn completes normally — only an escape/abort leaves it open.
-- **Auto-exit is suppressed while work is in flight:** the session parks as `waiting` instead of exiting when an `ask_question` is still unanswered, or when the agent's own child sub-agents are still running (a worker can stop after dispatching children and stays open until the last result returns).
+- **Auto-exit is suppressed while work is in flight:** the session parks as `waiting` instead of exiting when a message to the parent is still unanswered, or when the agent's own child sub-agents are still running (a worker can stop after dispatching children and stays open until the last result returns).
 
 ### interactive
 

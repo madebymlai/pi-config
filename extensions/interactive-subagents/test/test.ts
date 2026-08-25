@@ -56,6 +56,7 @@ import {
   runningChildrenCount,
 } from "../subagent-done.ts";
 import subagentDoneExtension from "../subagent-done.ts";
+import { registerSendMessage, __test__ as messagingTestApi } from "../messaging.ts";
 import { __pollForExitTest__ } from "../tmux.ts";
 
 // --- Helpers ---
@@ -130,6 +131,16 @@ function withMockedNow<T>(now: number, fn: () => T): T {
   Date.now = () => now;
   try {
     return fn();
+  } finally {
+    Date.now = originalNow;
+  }
+}
+
+async function withMockedNowAsync<T>(now: number, fn: () => Promise<T>): Promise<T> {
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    return await fn();
   } finally {
     Date.now = originalNow;
   }
@@ -1192,9 +1203,10 @@ describe("subagent discovery", () => {
     const allowlist = testApi.buildSubagentToolAllowlist(worker.tools, { grantSpawning: true });
     assert.ok(allowlist, "expected an allowlist");
     const tools = new Set(allowlist!.split(","));
-    for (const t of ["subagent", "subagent_message", "subagents_list"]) {
+    for (const t of ["subagent", "subagents_list"]) {
       assert.ok(tools.has(t), `expected spawning tool ${t} in worker allowlist`);
     }
+    assert.ok(tools.has("send_message"), "expected worker to keep send_message");
     assert.ok(tools.has("bash"), "expected worker to keep bash");
   });
 
@@ -1213,6 +1225,9 @@ describe("subagent discovery", () => {
     assert.ok(testApi.getToolExtensionPath("safe_bash")?.endsWith("tools/safe-bash.ts"));
     // Spawning tools are registered by this extension itself.
     assert.ok(testApi.getToolExtensionPath("subagent")?.endsWith("index.ts"));
+    // send_message is not: subagent-done.ts already loads into every subagent,
+    // so mapping it here would pull the whole orchestration extension into a leaf.
+    assert.equal(testApi.getToolExtensionPath("send_message"), undefined);
   });
 
   it("ignores invalid session-mode values", async () => {
@@ -1275,7 +1290,7 @@ describe("subagent discovery", () => {
   it("buildSubagentToolAllowlist preserves requested tools and adds child control tools", () => {
     assert.equal(
       testApi.buildSubagentToolAllowlist("read,bash,web_search"),
-      "read,bash,web_search,ask_question",
+      "read,bash,web_search,send_message",
     );
   });
 
@@ -1578,7 +1593,7 @@ describe("subagent-done.ts", () => {
     });
   });
 
-  describe("ask_question tool", () => {
+  describe("send_message (parent transport)", () => {
     function setupSubagentExtension(sessionFile: string) {
       const saved = {
         session: process.env.PI_SUBAGENT_SESSION,
@@ -1601,16 +1616,18 @@ describe("subagent-done.ts", () => {
       return { mock, restore };
     }
 
-    it("registers ask_question (and no caller_ping) with a single freeform question param", () => {
+    it("registers send_message (and neither caller_ping nor the retired tools)", () => {
       const dir = createTestDir();
       const { mock, restore } = setupSubagentExtension(join(dir, "s.jsonl"));
       try {
         const names = mock.registeredTools.map((t) => t.name);
-        assert.ok(names.includes("ask_question"));
-        assert.ok(!names.includes("caller_ping"));
-        const tool = mock.registeredTools.find((t) => t.name === "ask_question");
-        assert.deepEqual(Object.keys(tool.parameters.properties), ["question"]);
-        assert.match(tool.description, /orchestrator/i);
+        assert.ok(names.includes("send_message"));
+        for (const gone of ["caller_ping", "ask_question", "subagent_message"]) {
+          assert.ok(!names.includes(gone), `${gone} should no longer be registered`);
+        }
+        const tool = mock.registeredTools.find((t) => t.name === "send_message");
+        assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["message", "to"]);
+        assert.match(tool.description, /spawned you/i);
       } finally {
         restore();
         rmSync(dir, { recursive: true, force: true });
@@ -1622,12 +1639,19 @@ describe("subagent-done.ts", () => {
       const sessionFile = join(dir, "s.jsonl");
       const { mock, restore } = setupSubagentExtension(sessionFile);
       try {
-        const tool = mock.registeredTools.find((t) => t.name === "ask_question");
+        const tool = mock.registeredTools.find((t) => t.name === "send_message");
         let shutdownCalled = false;
         const ctx = { shutdown() { shutdownCalled = true; } } as any;
-        const out = await tool.execute("call-1", { question: "Which API base URL?" }, undefined, undefined, ctx);
+        const out = await tool.execute(
+          "call-1",
+          { to: "parent", message: "Which API base URL?" },
+          undefined,
+          undefined,
+          ctx,
+        );
 
-        assert.equal(shutdownCalled, false, "ask_question must keep the session open");
+        assert.equal(shutdownCalled, false, "messaging the parent must keep the session open");
+        assert.equal(out.details.status, "asked");
         assert.match(out.content[0].text, /wait/i);
 
         const askFile = `${sessionFile}.ask`;
@@ -1679,8 +1703,15 @@ describe("subagent-done.ts", () => {
         restoreEnvVar("PI_SUBAGENT_AUTO_EXIT", saved.autoExit);
       };
       const ask = async () => {
-        const tool = tools.find((t) => t.name === "ask_question");
-        await tool.execute("c1", { question: "v1 or v2?" }, undefined, undefined, { shutdown() {} });
+        const tool = tools.find((t) => t.name === "send_message");
+        const out = await tool.execute(
+          "c1",
+          { to: "parent", message: "v1 or v2?" },
+          undefined,
+          undefined,
+          { shutdown() {} },
+        );
+        assert.equal(out.details.status, "asked", "the parent transport should have claimed it");
       };
       return { emit, ask, restore };
     }
@@ -1744,9 +1775,9 @@ describe("subagent-done.ts", () => {
 describe("tmux.ts interpretExitSidecar", () => {
   const { interpretExitSidecar } = __pollForExitTest__;
 
-  it("no longer decodes ping payloads (ask_question keeps the session open instead)", () => {
-    // ask_question writes a `.ask` signal, not a `.exit` ping sidecar, so an
-    // unknown `type: "ping"` payload now falls through to a clean done.
+  it("no longer decodes ping payloads (messaging the parent keeps the session open instead)", () => {
+    // Messaging the parent writes a `.ask` signal, not a `.exit` ping sidecar,
+    // so an unknown `type: "ping"` payload now falls through to a clean done.
     assert.deepEqual(
       interpretExitSidecar({ type: "ping", name: "Worker", message: "need help" }),
       { reason: "done", exitCode: 0 },
@@ -1897,27 +1928,28 @@ describe("tool registration", () => {
     assert.match(output, /\(unnamed\)/);
   });
 
-  it("registers subagent_message with name + message both required (name-only addressing)", () => {
+  it("registers send_message with to + message both required (name-only addressing)", () => {
     const { api, registeredTools } = createMockExtensionApi();
     (subagentsModule as any).default(api);
 
-    const messageTool = registeredTools.find((tool) => tool.name === "subagent_message");
-    assert.ok(messageTool, "expected subagent_message tool to be registered");
+    const messageTool = registeredTools.find((tool) => tool.name === "send_message");
+    assert.ok(messageTool, "expected send_message tool to be registered");
 
     const props = messageTool.parameters.properties;
     assert.deepEqual(
       Object.keys(props).sort(),
-      ["message", "name"],
-      "only name/message should remain (sessionId dropped)",
+      ["message", "to"],
+      "only to/message should remain (sessionId dropped)",
     );
     assert.equal(props.message.type, "string");
-    assert.equal(props.name.type, "string");
+    assert.equal(props.to.type, "string");
     assert.deepEqual(
       messageTool.parameters.required?.slice().sort(),
-      ["message", "name"],
-      "name and message should both be required",
+      ["message", "to"],
+      "to and message should both be required",
     );
     assert.equal(props.sessionId, undefined, "sessionId should be removed");
+    assert.equal(props.name, undefined, "name should be replaced by to");
     assert.equal(props.autoExit, undefined, "autoExit knob should be removed");
   });
 
@@ -2117,16 +2149,17 @@ describe("subagent interruption", () => {
     };
   }
 
-  it("registers subagent_message and not the old interrupt/resume tools", () => {
+  it("registers send_message and not the retired or old interrupt/resume tools", () => {
     const { api, registeredTools } = createMockExtensionApi();
     (subagentsModule as any).default(api);
     const names = registeredTools.map((tool) => tool.name);
-    assert.equal(names.includes("subagent_message"), true);
-    assert.equal(names.includes("subagent_interrupt"), false);
-    assert.equal(names.includes("subagent_resume"), false);
+    assert.equal(names.includes("send_message"), true);
+    for (const gone of ["subagent_message", "ask_question", "subagent_interrupt", "subagent_resume"]) {
+      assert.equal(names.includes(gone), false, `${gone} should no longer be registered`);
+    }
   });
 
-  it("resolves a running subagent by exact name and reports ambiguity", () => {
+  it("routes an exact running name, and reports ambiguity rather than guessing", async () => {
     const testApi = (subagentsModule as any).__test__;
     const runningMap = testApi.runningSubagents as Map<string, any>;
     runningMap.clear();
@@ -2136,14 +2169,24 @@ describe("subagent interruption", () => {
       runningMap.set("b2", makeRunning({ id: "b2", name: "Worker", surface: "b2", sessionFile: "b2.jsonl" }));
       runningMap.set("c3", makeRunning({ id: "c3", name: "Scout", surface: "c3", sessionFile: "c3.jsonl" }));
 
-      const byName = testApi.resolveRunningByName("Scout");
-      assert.equal(byName.running.id, "c3");
+      let sentSurface = "";
+      const send = sendMessageWithFakeMux((surface: string) => {
+        sentSurface = surface;
+      });
 
-      const ambiguous = testApi.resolveRunningByName("Worker");
-      assert.match(ambiguous.error, /Ambiguous subagent name/);
+      const exact = await send("Scout", "go");
+      assert.equal(exact.details.status, "steered");
+      assert.equal(sentSurface, "c3");
 
-      const missing = testApi.resolveRunningByName("Ghost");
-      assert.match(missing.error, /No running subagent named "Ghost"/);
+      // Two panes share the name, so there is no right answer — say so rather
+      // than steering whichever happened to be first.
+      const ambiguous = await send("Worker", "go");
+      assert.equal(ambiguous.details.status, "transport-failed");
+      assert.match(ambiguous.details.reason, /Ambiguous subagent name/);
+
+      const missing = await send("Ghost", "go");
+      assert.equal(missing.details.status, "unknown-target");
+      assert.deepEqual(missing.details.known.slice().sort(), ["Scout", "Worker"]);
     } finally {
       runningMap.clear();
     }
@@ -2214,6 +2257,38 @@ describe("subagent interruption", () => {
     }
   });
 
+  it("never hands out the reserved parent name, even as a disambiguated suffix", () => {
+    const testApi = (subagentsModule as any).__test__;
+    const runningMap = testApi.runningSubagents as Map<string, any>;
+    const reserved = testApi.reservedNames as Set<string>;
+    runningMap.clear();
+    reserved.clear();
+
+    try {
+      // "parent" addresses the spawner in send_message, so it is taken before
+      // any subagent exists and a spawn named after it is pushed to a suffix.
+      assert.equal(testApi.uniqueRunningName("parent"), "parent-2");
+    } finally {
+      runningMap.clear();
+      reserved.clear();
+    }
+  });
+
+  it("refuses an explicit spawn named parent rather than silently renaming it", async () => {
+    const { api, registeredTools } = createMockExtensionApi();
+    (subagentsModule as any).default(api);
+    const subagentTool = registeredTools.find((tool: any) => tool.name === "subagent");
+
+    const result = await subagentTool.execute("call-1", {
+      name: "parent",
+      agent: "worker",
+      task: "do it",
+    });
+
+    assert.equal(result.details?.error, "reserved name");
+    assert.match(result.content[0].text, /reserved/i);
+  });
+
   it("steers a running subagent by typing into its pane (newlines flattened)", () => {
     const testApi = (subagentsModule as any).__test__;
     let sentSurface = "";
@@ -2241,7 +2316,32 @@ describe("subagent interruption", () => {
     assert.match(result.error, /Failed to deliver message/);
   });
 
-  it("delivers a steer message and forces local status waiting", () => {
+  /**
+   * Drive send_message with the real child transports but a fake tmux, so
+   * routing, status transitions and outcome mapping are all exercised while
+   * nothing shells out.
+   */
+  function sendMessageWithFakeMux(send: (surface: string, command: string) => void) {
+    const { api, registeredTools } = createMockExtensionApi();
+    messagingTestApi.resetTransports();
+    const testApi = (subagentsModule as any).__test__;
+    registerSendMessage(
+      api,
+      "children",
+      testApi.createChildTransports(api, { send, muxAvailable: () => true }),
+    );
+    const tool = registeredTools.find((t: any) => t.name === "send_message");
+    assert.ok(tool, "expected send_message to be registered");
+    return (to: string, message: string) =>
+      tool.execute("c1", { to, message }, undefined, undefined, {
+        sessionManager: {
+          getSessionDir: () => "/nonexistent",
+          getSessionId: () => "none",
+        },
+      });
+  }
+
+  it("delivers a steer message and forces local status waiting", async () => {
     const testApi = (subagentsModule as any).__test__;
     const runningMap = testApi.runningSubagents as Map<string, any>;
     let sentSurface = "";
@@ -2266,17 +2366,16 @@ describe("subagent interruption", () => {
     try {
       runningMap.set("a1", makeRunning({ statusState: activeState }));
 
-      const result = withMockedNow(20_000, () =>
-        testApi.handleSubagentSteer({ name: "Worker", message: "keep going" }, (surface: string, text: string) => {
-          sentSurface = surface;
-          sentText = text;
-        }),
-      );
+      const send = sendMessageWithFakeMux((surface: string, text: string) => {
+        sentSurface = surface;
+        sentText = text;
+      });
+      const result = await withMockedNowAsync(20_000, () => send("Worker", "keep going"));
 
       assert.equal(sentSurface, "pane-1");
       assert.equal(sentText, "keep going");
       assert.equal(result.content[0].text.includes('Message delivered to running subagent "Worker"'), true);
-      assert.deepEqual(result.details, { id: "a1", name: "Worker", status: "steered" });
+      assert.deepEqual(result.details, { status: "steered", name: "Worker" });
       const snapshot = classifyStatus(runningMap.get("a1").statusState, 20_000);
       assert.equal(snapshot.kind, "waiting");
       assert.equal(runningMap.has("a1"), true);
@@ -2285,20 +2384,26 @@ describe("subagent interruption", () => {
     }
   });
 
-  it("requires a message when steering", () => {
+  it("requires a message when steering", async () => {
     const testApi = (subagentsModule as any).__test__;
     const runningMap = testApi.runningSubagents as Map<string, any>;
     runningMap.clear();
     try {
       runningMap.set("a1", makeRunning());
-      const result = testApi.handleSubagentSteer({ name: "Worker", message: "  " }, () => {});
+      let sent = false;
+      const send = sendMessageWithFakeMux(() => {
+        sent = true;
+      });
+      const result = await send("Worker", "  ");
+      assert.equal(result.details.status, "empty-message");
       assert.match(result.content[0].text, /`message` is required/);
+      assert.equal(sent, false, "an empty message must not reach the pane");
     } finally {
       runningMap.clear();
     }
   });
 
-  it("leaves status unchanged when steering delivery fails in the tool path", () => {
+  it("leaves status unchanged when steering delivery fails in the tool path", async () => {
     const testApi = (subagentsModule as any).__test__;
     const runningMap = testApi.runningSubagents as Map<string, any>;
     runningMap.clear();
@@ -2321,12 +2426,12 @@ describe("subagent interruption", () => {
     try {
       runningMap.set("a1", makeRunning({ statusState: activeState }));
 
-      const result = withMockedNow(20_000, () =>
-        testApi.handleSubagentSteer({ name: "Worker", message: "go" }, () => {
-          throw new Error("mux write failed");
-        }),
-      );
+      const send = sendMessageWithFakeMux(() => {
+        throw new Error("mux write failed");
+      });
+      const result = await withMockedNowAsync(20_000, () => send("Worker", "go"));
 
+      assert.equal(result.details.status, "transport-failed");
       assert.match(result.content[0].text, /Failed to deliver message/);
       assert.equal(classifyStatus(runningMap.get("a1").statusState, 20_000).kind, "active");
     } finally {
@@ -2350,7 +2455,7 @@ describe("subagent interruption", () => {
     assert.match(presentation, /failed \(exit code 130\)/);
     assert.doesNotMatch(presentation, /interrupted/);
     // Follow-ups reference the name (not the session id).
-    assert.match(presentation, /subagent_message\(\{ name: "Worker"/);
+    assert.match(presentation, /send_message\(\{ to: "Worker"/);
     assert.doesNotMatch(presentation, /Session id:/);
   });
 
@@ -2376,7 +2481,7 @@ describe("subagent interruption", () => {
     assert.match(presentation, /Sub-agent "Worker" failed/);
     assert.match(presentation, /provider\/agent error — auto-retry exhausted/);
     assert.match(presentation, /Error: Anthropic 529 Overloaded after 3 retries/);
-    assert.match(presentation, /subagent_message\(\{ name: "Worker"/);
+    assert.match(presentation, /send_message\(\{ to: "Worker"/);
     assert.doesNotMatch(presentation, /Session id:/);
     assert.doesNotMatch(presentation, /ignored when errorMessage is present/);
   });
