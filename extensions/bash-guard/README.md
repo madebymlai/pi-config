@@ -1,14 +1,11 @@
 # bash-guard (pi extension)
 
-Intercepts agent-issued `bash` tool calls and applies different protection depending on whether
-the session is interactive (main session) or non-interactive (spawned subagent).
+Intercepts agent-issued `bash` tool calls in the main session and prompts before running
+anything destructive or questionable.
 
 ## Modes
 
-Behaviour is determined at registration time via the `PI_SUBAGENT_DEPTH` environment variable,
-which pi-subagents injects into every spawned process.
-
-### Main session (`PI_SUBAGENT_DEPTH` = 0 or unset) — interactive prompt
+### Enabled (default) — interactive prompt
 
 - Heuristically detects destructive/questionable commands via shell-aware parsing
 - Prompts for **any** `git ...` command (escalates severity for especially risky ones: `git rm`,
@@ -23,10 +20,13 @@ which pi-subagents injects into every spawned process.
 - If aborted, the tool call is blocked and the model receives a clear reason
 - Remembers recently aborted commands for 60 s to prevent retry loops
 
-### Subagent (`PI_SUBAGENT_DEPTH` ≥ 1) — headless hard-block
+### Disabled (autonomous) — hard-block floor only
 
-Spawned subagents have no UI (stdin is `/dev/null`), so prompting is impossible. Instead,
-a focused set of catastrophic/unrecoverable operations is hard-blocked with no user interaction:
+Turn the prompt off with `/bash-guard` (session-local toggle) or start the session with
+`--bash-guard-disabled`. A red `⚠ BG OFF` badge stays in the status line while disabled.
+
+Prompting is skipped entirely, but a floor of catastrophic/unrecoverable operations stays
+hard-blocked with no user interaction:
 
 | Pattern | Reason |
 |---|---|
@@ -44,15 +44,23 @@ a focused set of catastrophic/unrecoverable operations is hard-blocked with no u
 | `terraform destroy` | Infrastructure teardown |
 | `kubectl delete` | Kubernetes resource deletion |
 | `aws s3 rm --recursive` | Bulk S3 deletion |
-| `git commit` | Main-session operation |
-| `git pull` | Main-session operation |
-| `git push` | Main-session operation |
 | `git reset --hard` | Discard all uncommitted changes |
 | `git clean -f` | Delete untracked files |
 | `git reflog expire` | Remove recovery history |
 | `git gc --prune` | Prune unreachable objects |
 
-All other commands (including routine git operations) pass through unaffected.
+Routine git operations (`commit`, `pull`, `push`) pass through: disabling bash-guard is an
+explicit opt-in to autonomy, and those are recoverable.
+
+The toggle is session-local and deliberately not persisted — `/reload` or a restart puts the
+prompt back on.
+
+## Subagents
+
+Subagents never load this extension: children run with `--no-extensions` and an explicit
+`-e` whitelist that does not include bash-guard. A subagent's bash protection comes from
+`interactive-subagents/child/tools/safe-bash.ts`, granted when a role's `tools:` frontmatter
+lists `safe_bash`.
 
 ## Install
 
@@ -61,5 +69,7 @@ Auto-discovered from `~/.pi/agent/extensions/bash-guard/`. Run `/reload` in pi.
 ## Notes
 
 - Scope: `bash` tool calls only (`write`/`edit` and user `!` commands are not intercepted).
-- `--bash-guard-auto-allow`: main-session flag that allows flagged commands when there is no UI
-  (e.g. running pi non-interactively). Has no effect in subagent sessions.
+- `/bash-guard`: toggle the prompt off/on for this session.
+- `--bash-guard-disabled`: start the session with the prompt already off.
+- `--bash-guard-auto-allow`: allow flagged commands when there is no UI (e.g. running pi
+  non-interactively). Not a disable switch — it only applies when prompting is impossible.

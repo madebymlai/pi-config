@@ -339,16 +339,13 @@ async function promptRunOrAbort(ctx: ExtensionContext, command: string, risk: Ri
 	return choice ?? "abort";
 }
 
-// PI_SUBAGENT_DEPTH is 0 (or unset) in the main session and >= 1 in spawned subagent processes.
-// Behaviour branches on this: interactive prompting in the main session, headless hard-block
-// for catastrophic operations in subagents (where stdin is /dev/null and no UI is available).
-const _subagentDepth = Number(process.env.PI_SUBAGENT_DEPTH ?? "0");
-const _isSubagent = Number.isFinite(_subagentDepth) && _subagentDepth >= 1;
-
-// Hard-block patterns for subagent (headless) mode. Criteria: unrecoverable by default AND
-// unlikely to be intentional in an automated context. Fewer false positives over broad coverage —
-// the interactive prompt handles the rest for main sessions.
-const HEADLESS_BLOCKED: Array<{ pattern: RegExp; reason: string }> = [
+// Hard-block floor for disabled (autonomous) mode. Criteria: unrecoverable by default AND
+// unlikely to be intentional when running unattended. Fewer false positives over broad
+// coverage — the interactive prompt handles everything else while bash-guard is enabled.
+//
+// Routine git operations (commit/pull/push) are deliberately absent: disabling bash-guard is
+// an explicit opt-in to autonomy, and those are recoverable.
+const AUTONOMOUS_FLOOR: Array<{ pattern: RegExp; reason: string }> = [
 	// Recursive deletion
 	{ pattern: /(?<!\bgit\s+)\brm\b[^#\n]*\s-(?:[a-zA-Z]*[rR]|-\brecursive\b)/, reason: "recursive delete (rm -r / -rf / -Rf)" },
 	// Privilege escalation
@@ -371,30 +368,11 @@ const HEADLESS_BLOCKED: Array<{ pattern: RegExp; reason: string }> = [
 	{ pattern: /\bkubectl\s+delete\b/, reason: "Kubernetes resource deletion" },
 	{ pattern: /\baws\s+s3\s+rm\b[^#\n]*--recursive/, reason: "bulk S3 deletion (aws s3 rm --recursive)" },
 	// Destructive git operations
-	{ pattern: /\bgit\s+commit\b/, reason: "git commit (commits are main-session operations)" },
-	{ pattern: /\bgit\s+pull\b/, reason: "git pull (pulls are main-session operations)" },
-	{ pattern: /\bgit\s+push\b/, reason: "git push (pushes are main-session operations)" },
 	{ pattern: /\bgit\s+reset\b[^#\n]*--hard\b/, reason: "discard all uncommitted changes (git reset --hard)" },
 	{ pattern: /\bgit\s+clean\b[^#\n]*-[a-zA-Z]*f/, reason: "delete untracked files (git clean -f)" },
 	{ pattern: /\bgit\s+reflog\s+expire\b/, reason: "expire reflog (removes recovery history)" },
 	{ pattern: /\bgit\s+gc\b[^#\n]*--prune\b/, reason: "prune unreachable objects (git gc --prune)" },
 ];
-
-// Subset of HEADLESS_BLOCKED used as the hard-block floor when bash-guard is
-// disabled in an interactive (main) session. The user explicitly opts into
-// autonomy here, so routine git operations (commit/pull/push) are allowed
-// through; only truly catastrophic / non-recoverable patterns remain blocked.
-const MAIN_DISABLED_BLOCKED: Array<{ pattern: RegExp; reason: string }> = HEADLESS_BLOCKED.filter(
-	({ pattern }) => {
-		const src = pattern.source;
-		return !(
-			src.includes("git\\s+commit") ||
-			src.includes("git\\s+pull") ||
-			// Keep `git push --force` blocked but allow plain `git push`.
-			src === "\\bgit\\s+push\\b"
-		);
-	},
-);
 
 // Warning shown via ctx.ui.setStatus when bash-guard is disabled. Pi joins all
 // extension statuses on a single line sorted alphabetically by key, so:
@@ -411,27 +389,8 @@ const MAIN_DISABLED_BLOCKED: Array<{ pattern: RegExp; reason: string }> = HEADLE
 const BASH_GUARD_STATUS_KEY = " bash-guard";
 
 export default function (pi: ExtensionAPI) {
-	if (_isSubagent) {
-		// Subagent mode: hard-block catastrophic operations, no prompting.
-		pi.on("tool_call", async (event) => {
-			if (!isToolCallEventType("bash", event)) return;
-			const command = event.input.command;
-			for (const { pattern, reason } of HEADLESS_BLOCKED) {
-				if (pattern.test(command)) {
-					return {
-						block: true,
-						reason:
-							`Blocked by bash-guard: ${reason}. ` +
-							"This is a non-interactive subagent session — catastrophic operations are not permitted. " +
-							"Propose a safer alternative or ask the parent agent to confirm with the user.",
-					};
-				}
-			}
-		});
-		return;
-	}
-
-	// Main session mode: interactive prompting.
+	// Interactive prompting. Subagents never reach this file: children run with
+	// --no-extensions and are bash-guarded by child/tools/safe-bash.ts instead.
 	pi.registerFlag("bash-guard-auto-allow", {
 		description: "If set, bash-guard will not block when no UI is available (non-interactive modes).",
 		type: "boolean",
@@ -493,7 +452,7 @@ export default function (pi: ExtensionAPI) {
 		// Disabled (autonomous) mode: skip interactive prompting entirely, but keep
 		// a hard-block floor for catastrophic operations.
 		if (disabled) {
-			for (const { pattern, reason } of MAIN_DISABLED_BLOCKED) {
+			for (const { pattern, reason } of AUTONOMOUS_FLOOR) {
 				if (pattern.test(command)) {
 					return {
 						block: true,
