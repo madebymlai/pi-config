@@ -49,14 +49,19 @@ function widgetIcon(kind: StatusSnapshot["kind"]): string {
   }
 }
 
-function formatMMSS(elapsedMs: number): string {
+/**
+ * MM:SS. Negative elapsed is clamped to zero: a backwards clock would otherwise
+ * render "-1:-1" in the widget. This is the one deliberate difference from the
+ * pre-extraction renderer, which had no clamp.
+ */
+function formatMMSS(elapsedMs: number) {
   const seconds = Math.floor(Math.max(0, elapsedMs) / 1000);
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function rightLabel(snapshot: StatusSnapshot): string {
+function rightLabel(snapshot: StatusSnapshot) {
   if (snapshot.kind === "starting") return " starting… ";
   if (snapshot.kind === "running") return ` running ${snapshot.elapsedText} `;
   if (snapshot.kind === "active") {
@@ -144,7 +149,7 @@ export function renderSubagentWidget(
   rows: readonly WidgetRow[],
   width: number,
   opts: { showStatus: boolean },
-): string[] {
+) {
   const lines: string[] = [borderTop("Subagents", `${rows.length} running`, width)];
 
   for (const row of rows) {

@@ -19,19 +19,7 @@ import {
   usageSegments,
   type UsageSeverity,
 } from "./result.ts";
-
-/** How a usage segment's severity is painted. The theme is the caller's, so the mapping is too. */
-const USAGE_TONE = {
-  normal: "dim",
-  warning: "warning",
-  critical: "error",
-} as const satisfies Record<UsageSeverity, string>;
-import {
-  computeToolAllowlist,
-  promptArgs,
-  sandboxArgs,
-  slugify,
-} from "./sandbox.ts";
+import { computeToolAllowlist, promptArgs, sandboxArgs, slugify } from "./sandbox.ts";
 import {
   getAgentConfigDir,
   listAgents,
@@ -83,6 +71,13 @@ import {
 } from "./messaging.ts";
 
 /** Absolute path to this extension's directory. https://github.com/nodejs/node/issues/37845 */
+/** How a usage segment's severity is painted. The theme is the caller's, so the mapping is too. */
+const USAGE_TONE = {
+  normal: "dim",
+  warning: "warning",
+  critical: "error",
+} as const satisfies Record<UsageSeverity, string>;
+
 const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url));
 // <extensions>/interactive-subagents -> <extensions>
 

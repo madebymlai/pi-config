@@ -125,4 +125,19 @@ describe("agents.ts", () => {
       });
     });
   });
+
+  describe("frontmatter boolean parsing", () => {
+    // Exact-match, deliberately: "True" is not "true". Pinned because a
+    // refactor silently made this case-insensitive once.
+    it("only accepts a lowercase true", async () => {
+      assert.equal((await launchOf(["auto-exit: true"])).defs!.autoExit, true);
+      assert.equal((await launchOf(["auto-exit: True"])).defs!.autoExit, false);
+      assert.equal((await launchOf(["auto-exit: TRUE"])).defs!.autoExit, false);
+      assert.equal((await launchOf(["auto-exit: yes"])).defs!.autoExit, false);
+    });
+
+    it("leaves the field undefined when the key is absent", async () => {
+      assert.equal((await launchOf([])).defs!.autoExit, undefined);
+    });
+  });
 });

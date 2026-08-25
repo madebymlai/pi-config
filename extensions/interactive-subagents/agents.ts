@@ -62,7 +62,7 @@ export interface ListedAgentDefinition extends AgentDefinition {
  * be a pass-through. The sandbox imports it from here to resolve extension
  * paths under the agent dir.
  */
-export function getAgentConfigDir(): string {
+export function getAgentConfigDir() {
   return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
 }
 
@@ -75,7 +75,7 @@ function getBundledAgentsDir(): string {
  * set of agents it may itself spawn via PI_SUBAGENT_ALLOWED. `null` means no
  * restriction (top-level session, or an unrestricted child).
  */
-export const SUBAGENT_ALLOWLIST: Set<string> | null = (() => {
+export const SUBAGENT_ALLOWLIST = (() => {
   const raw = process.env.PI_SUBAGENT_ALLOWED;
   if (!raw) return null;
   const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
@@ -88,11 +88,11 @@ function getFrontmatterValue(frontmatter: string, key: string): string | undefin
 }
 
 function parseOptionalBoolean(value: string | undefined): boolean | undefined {
-  return value === undefined ? undefined : value.toLowerCase() === "true";
+  return value != null ? value === "true" : undefined;
 }
 
 function parseCommaList(value: string | undefined): string[] | undefined {
-  if (value === undefined) return undefined;
+  if (value == null) return undefined;
   const list = value.split(",").map((s) => s.trim()).filter(Boolean);
   return list.length > 0 ? list : undefined;
 }
@@ -140,7 +140,7 @@ function parseAgentDefinition(content: string, fallbackName: string): AgentDefin
  * Every agent this session may spawn, project tier shadowing global shadowing
  * bundled. A restricted subagent sees only the agents it was pinned to.
  */
-export function listAgents(): ListedAgentDefinition[] {
+export function listAgents() {
   const agents = new Map<string, ListedAgentDefinition>();
   const dirs: Array<{ path: string; source: AgentSource }> = [
     { path: getBundledAgentsDir(), source: "package" },
@@ -231,7 +231,7 @@ export function resolveAgentLaunch(agentName: string | undefined): AgentLaunch {
  * steer message (fire-and-forget). An interactive resume would park the pane
  * waiting for the user, contradicting that result-delivery model.
  */
-export const RESUME_LAUNCH: { autoExit: boolean; interactive: boolean } = {
+export const RESUME_LAUNCH = {
   autoExit: true,
   interactive: false,
 };

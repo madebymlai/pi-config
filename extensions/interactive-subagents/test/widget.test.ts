@@ -59,6 +59,12 @@ describe("widget.ts", () => {
       assert.match(body, /01:05/);
     });
 
+    it("clamps a backwards clock to zero rather than rendering -1:-1", () => {
+      const [, body] = renderSubagentWidget([row({ elapsedMs: -5_000 })], 60, SHOW);
+      assert.match(body, /00:00/);
+      assert.doesNotMatch(body, /-/);
+    });
+
     it("shows the agent role in parentheses when there is one", () => {
       const [, body] = renderSubagentWidget([row({ name: "scout-1", agent: "scout" })], 60, SHOW);
       assert.match(body, /scout-1 \(scout\)/);

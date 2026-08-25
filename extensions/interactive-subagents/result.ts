@@ -25,7 +25,7 @@ export interface UsageSegment {
 const WARNING_ABOVE_PCT = 70;
 const CRITICAL_ABOVE_PCT = 90;
 
-export function formatElapsed(seconds: number): string {
+export function formatElapsed(seconds: number) {
   if (seconds < 60) return `${seconds}s`;
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
@@ -68,7 +68,7 @@ function formatContextUsage(tokens: number, contextWindow: number | undefined): 
  * one that can carry a severity above normal — a window we cannot identify
  * yields no percentage, so it stays normal rather than guessing.
  */
-export function usageSegments(stats: SessionStats): UsageSegment[] {
+export function usageSegments(stats: SessionStats) {
   const segs: UsageSegment[] = [];
   const plain = (text: string) => segs.push({ text, severity: "normal" as const });
 
@@ -108,7 +108,7 @@ export interface FinishedRun {
  * follow-up handle, because the name steers a running subagent and resumes a
  * finished one alike.
  */
-export function describeResult(result: FinishedRun, name: string): string {
+export function describeResult(result: FinishedRun, name: string) {
   const sessionRef = `\n\nFollow up with send_message({ to: "${name}", message: "…" })`;
 
   if (result.errorMessage) {
@@ -140,7 +140,7 @@ export function describeResult(result: FinishedRun, name: string): string {
 export function stripResultPreamble(
   content: string,
   opts: { name: string; elapsedText: string; exitCode: number },
-): string {
+) {
   const { name, elapsedText, exitCode } = opts;
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 

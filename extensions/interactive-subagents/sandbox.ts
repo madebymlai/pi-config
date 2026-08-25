@@ -21,8 +21,8 @@ import { getAgentConfigDir } from "./agents.ts";
 import type { SubagentLoadout } from "./session.ts";
 import { shellEscape } from "./tmux.ts";
 
-const SANDBOX_DIR = dirname(fileURLToPath(import.meta.url));
-const SIBLING_EXTENSIONS_DIR = resolve(SANDBOX_DIR, "..");
+const EXTENSION_DIR = dirname(fileURLToPath(import.meta.url));
+const SIBLING_EXTENSIONS_DIR = resolve(EXTENSION_DIR, "..");
 
 /**
  * Tools registered by index.ts. Granting any of them is what pulls the
@@ -96,10 +96,10 @@ export function getToolExtensionPath(tool: string): string | undefined {
   // The spawning tools are registered by index.ts. Naming it explicitly rather
   // than using import.meta.url, which would resolve to this file instead.
   if ((SPAWNING_TOOLS as readonly string[]).includes(tool)) {
-    return join(SANDBOX_DIR, "index.ts");
+    return join(EXTENSION_DIR, "index.ts");
   }
   if (tool === "safe_bash") {
-    const safeBash = join(SANDBOX_DIR, "tools", "safe-bash.ts");
+    const safeBash = join(EXTENSION_DIR, "tools", "safe-bash.ts");
     return existsSync(safeBash) ? safeBash : undefined;
   }
   const map: Record<string, readonly string[]> = {
@@ -140,7 +140,7 @@ export function getToolExtensionPath(tool: string): string | undefined {
 export function computeToolAllowlist(
   effectiveTools: string | undefined,
   opts: { grantSpawning: boolean },
-): string | null {
+) {
   const requested = (effectiveTools ?? "")
     .split(",")
     .map((tool) => tool.trim())
@@ -174,7 +174,7 @@ export function computeToolAllowlist(
 export function sandboxArgs(
   loadout: SubagentLoadout,
   opts: { artifactDir: string; name: string },
-): string[] {
+) {
   const parts: string[] = [];
 
   if (loadout.model) {
