@@ -8,6 +8,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import * as subagentsModule from "../index.ts";
 import { listAgents, resolveAgentLaunch, RESUME_LAUNCH } from "../agents.ts";
 import { computeToolAllowlist, getToolExtensionPath } from "../sandbox.ts";
+import { describeResult } from "../result.ts";
 import {
   createTestDir,
   restoreEnvVar,
@@ -2157,14 +2158,11 @@ describe("subagent interruption", () => {
   });
 
   it("formats exit code 130 as an ordinary failure", () => {
-    const testApi = (subagentsModule as any).__test__;
-    const presentation = testApi.resolveResultPresentation(
+    const presentation = describeResult(
       {
         exitCode: 130,
         elapsed: 61,
         summary: "Sub-agent exited with code 130",
-        sessionFile: "/tmp/subagent.jsonl",
-        sessionId: "019f-abc",
       },
       "Worker",
     );
@@ -2182,14 +2180,11 @@ describe("subagent interruption", () => {
     // quickly. With the error sidecar plumbed through, the presentation
     // must call out the failure, include the underlying error, and tell the
     // orchestrator how to recover.
-    const testApi = (subagentsModule as any).__test__;
-    const presentation = testApi.resolveResultPresentation(
+    const presentation = describeResult(
       {
         exitCode: 1,
         elapsed: 14,
         summary: "ignored when errorMessage is present",
-        sessionFile: "/tmp/subagent.jsonl",
-        sessionId: "019f-xyz",
         errorMessage: "Anthropic 529 Overloaded after 3 retries",
       },
       "Worker",
@@ -2312,71 +2307,6 @@ describe("subagent startup delay", () => {
     }
   });
 });
-describe("subagent display helpers", () => {
-  const testApi = (subagentsModule as any).__test__;
-
-  describe("formatTokens", () => {
-    it("renders raw counts below 1k, 1 decimal below 10k, rounded k above", () => {
-      assert.equal(testApi.formatTokens(850), "850");
-      assert.equal(testApi.formatTokens(3200), "3.2k");
-      assert.equal(testApi.formatTokens(45000), "45k");
-    });
-  });
-
-  describe("contextWindowFor", () => {
-    it("maps known model families and returns undefined otherwise", () => {
-      assert.equal(testApi.contextWindowFor("claude-sonnet-4-6"), 200_000);
-      assert.equal(testApi.contextWindowFor("gemini-2.5-pro"), 1_000_000);
-      assert.equal(testApi.contextWindowFor("some-unknown-model"), undefined);
-      assert.equal(testApi.contextWindowFor(null), undefined);
-    });
-  });
-
-  describe("formatContextUsage", () => {
-    it("shows a percent gauge when the window is known", () => {
-      assert.equal(testApi.formatContextUsage(36_000, 200_000), "18.0%/200k");
-      assert.equal(testApi.formatContextUsage(500_000, 1_000_000), "50.0%/1.0M");
-    });
-
-    it("falls back to a window-less ctx label when unknown", () => {
-      assert.equal(testApi.formatContextUsage(37_000, undefined), "37k ctx");
-    });
-  });
-
-  describe("formatUsageSegments", () => {
-    it("emits arrow/cache/cost segments, skipping zero fields", () => {
-      const segs = testApi.formatUsageSegments({
-        model: "claude-sonnet-4-6",
-        toolCount: 3,
-        inputTokens: 3200,
-        outputTokens: 890,
-        cacheReadTokens: 45000,
-        cacheWriteTokens: 0,
-        contextTokens: 7000,
-        cost: 0.042,
-      });
-      assert.deepEqual(segs, ["↑3.2k", "↓890", "R45k", "$0.042"]);
-    });
-
-    it("returns an empty list when there is no usage", () => {
-      assert.deepEqual(
-        testApi.formatUsageSegments({
-          model: null,
-          toolCount: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          contextTokens: 0,
-          cost: 0,
-        }),
-        [],
-      );
-    });
-  });
-
-});
-
 describe("tmux.ts", () => {
   describe("shellEscape", () => {
     it("wraps in single quotes", () => {

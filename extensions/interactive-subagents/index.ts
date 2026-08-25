@@ -13,6 +13,20 @@ import {
 } from "node:fs";
 import { renderSubagentWidget } from "./widget.ts";
 import {
+  describeResult,
+  formatElapsed,
+  stripResultPreamble,
+  usageSegments,
+  type UsageSeverity,
+} from "./result.ts";
+
+/** How a usage segment's severity is painted. The theme is the caller's, so the mapping is too. */
+const USAGE_TONE = {
+  normal: "dim",
+  warning: "warning",
+  critical: "error",
+} as const satisfies Record<UsageSeverity, string>;
+import {
   computeToolAllowlist,
   promptArgs,
   sandboxArgs,
@@ -149,57 +163,6 @@ function getDefaultSessionDirFor(cwd: string, agentDir: string): string {
   return sessionDir;
 }
 
-function formatElapsed(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}m ${s}s`;
-}
-
-/** Compact token count: 850, 3.2k, 45k. */
-function formatTokens(n: number): string {
-  return n < 1000 ? String(n) : n < 10000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`;
-}
-
-/**
- * Known context-window sizes by model id substring, used for the context-usage
- * gauge. Unknown models fall back to a window-less "Nk ctx" label.
- */
-function contextWindowFor(model: string | null | undefined): number | undefined {
-  if (!model) return undefined;
-  const m = model.toLowerCase();
-  if (m.includes("claude")) return 200_000;
-  if (m.includes("gpt-4.1") || m.includes("gpt-4o")) return 128_000;
-  if (m.includes("gemini")) return 1_000_000;
-  return undefined;
-}
-
-/** Context-usage gauge: "18.0%/200k" when window known, else "37k ctx". */
-function formatContextUsage(tokens: number, contextWindow: number | undefined): string {
-  if (!contextWindow) return `${formatTokens(tokens)} ctx`;
-  const pct = (tokens / contextWindow) * 100;
-  const maxStr =
-    contextWindow >= 1_000_000
-      ? `${(contextWindow / 1_000_000).toFixed(1)}M`
-      : `${Math.round(contextWindow / 1000)}k`;
-  return `${pct.toFixed(1)}%/${maxStr}`;
-}
-
-/**
- * Build the dim usage line for a completed subagent, mirroring the format of
- * the in-process subagents extension: "↑in ↓out R… W… $cost · ctx".
- * `theme.fg` is applied by the caller; this returns plain segments joined.
- */
-function formatUsageSegments(stats: SessionStats): string[] {
-  const segs: string[] = [];
-  if (stats.inputTokens) segs.push(`↑${formatTokens(stats.inputTokens)}`);
-  if (stats.outputTokens) segs.push(`↓${formatTokens(stats.outputTokens)}`);
-  if (stats.cacheReadTokens) segs.push(`R${formatTokens(stats.cacheReadTokens)}`);
-  if (stats.cacheWriteTokens) segs.push(`W${formatTokens(stats.cacheWriteTokens)}`);
-  if (stats.cost) segs.push(`$${stats.cost.toFixed(3)}`);
-  return segs;
-}
-
 /**
  * Wait long enough for a freshly created pane to finish shell startup.
  *
@@ -254,36 +217,6 @@ function parentArtifactDirOf(ctx: MessagingContext) {
 }
 
 const statusConfig = loadStatusConfig();
-
-function resolveResultPresentation(
-  result: Pick<
-    SubagentResult,
-    "exitCode" | "elapsed" | "summary" | "sessionFile" | "sessionId" | "errorMessage"
-  >,
-  name: string,
-): string {
-  // Name is the persistent handle: the same name steers a running subagent or
-  // resumes a finished one, so follow-ups always reference it.
-  const sessionRef = `\n\nFollow up with send_message({ to: "${name}", message: "…" })`;
-
-  if (result.errorMessage) {
-    // Auto-retry exhausted or other agent-loop error. The subagent did not
-    // produce a usable result — surface the underlying provider/network
-    // failure so the orchestrator can decide whether to retry, resume, or
-    // change approach instead of silently treating the run as completed.
-    return (
-      `Sub-agent "${name}" failed after ${formatElapsed(result.elapsed)} ` +
-      `(provider/agent error — auto-retry exhausted).\n\n` +
-      `Error: ${result.errorMessage}\n\n` +
-      `The subagent did not produce a result. You can retry by spawning a new ` +
-      `subagent or resume the session with send_message.${sessionRef}`
-    );
-  }
-
-  return result.exitCode !== 0
-    ? `Sub-agent "${name}" failed (exit code ${result.exitCode}).\n\n${result.summary}${sessionRef}`
-    : `Sub-agent "${name}" completed (${formatElapsed(result.elapsed)}).\n\n${result.summary}${sessionRef}`;
-}
 
 /**
  * Result from running a single subagent.
@@ -518,13 +451,7 @@ export const __test__ = {
   reservedNames,
   steerRunning,
   createChildTransports,
-  resolveResultPresentation,
   runningSubagents,
-  formatElapsed,
-  formatTokens,
-  formatContextUsage,
-  contextWindowFor,
-  formatUsageSegments,
 };
 
 function startWidgetRefresh() {
@@ -859,7 +786,7 @@ function runSubagent(pi: ExtensionAPI, run: SubagentRun): RunningSubagent {
       pi.sendMessage(
         {
           customType: "subagent_result",
-          content: resolveResultPresentation(result, running.name),
+          content: describeResult(result, running.name),
           display: true,
           details: {
             name: running.name,
@@ -1567,31 +1494,18 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         // Usage line: ↑in ↓out R… W… $cost · context-gauge (color-coded by %).
         let usageLine: string | null = null;
         if (stats) {
-          const segs = formatUsageSegments(stats).map((s) => theme.fg("dim", s));
-          if (stats.contextTokens > 0) {
-            const window = contextWindowFor(stats.model);
-            const ctxStr = formatContextUsage(stats.contextTokens, window);
-            const pct = window ? (stats.contextTokens / window) * 100 : 0;
-            const coloredCtx =
-              pct > 90 ? theme.fg("error", ctxStr) : pct > 70 ? theme.fg("warning", ctxStr) : theme.fg("dim", ctxStr);
-            segs.push(coloredCtx);
-          }
+          const segs = usageSegments(stats).map((s) => theme.fg(USAGE_TONE[s.severity], s.text));
           if (segs.length > 0) usageLine = segs.join(theme.fg("dim", " "));
         }
 
         const rawContent = typeof message.content === "string" ? message.content : "";
 
         // Clean summary (remove follow-up ref and leading label for display)
-        const summary = rawContent
-          .replace(/\n\nFollow up with send_message[\s\S]+$/, "")
-          .replace(`Sub-agent "${name}" completed (${elapsed}).\n\n`, "")
-          .replace(`Sub-agent "${name}" failed (exit code ${exitCode}).\n\n`, "")
-          .replace(
-            new RegExp(
-              `^Sub-agent "${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}" failed after ${elapsed} \\(provider/agent error — auto-retry exhausted\\)\\.\\n\\n`,
-            ),
-            "",
-          );
+        const summary = stripResultPreamble(rawContent, {
+          name,
+          elapsedText: elapsed,
+          exitCode,
+        });
 
         // Build content for the box
         const contentLines = [header];
