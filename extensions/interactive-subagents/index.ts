@@ -3,9 +3,17 @@ import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { Box, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import {
+  readSubagentResultDetails,
+  renderSubagentResult,
+} from "./render/subagent-result.ts";
+import {
   readSubagentStatusDetails,
   renderSubagentStatus,
 } from "./render/subagent-status.ts";
+import {
+  readSubagentMessageDetails,
+  renderSubagentMessage,
+} from "./render/subagent-message.ts";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -1353,99 +1361,22 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
   // ── subagent_result message renderer ──
   pi.registerMessageRenderer("subagent_result", (message, options, theme) => {
-    const details = message.details as any;
+    const details = readSubagentResultDetails(message.details);
     if (!details) return undefined;
 
     return {
       invalidate() {},
       render(width: number): string[] {
-        const name = details.name ?? "subagent";
-        const exitCode = details.exitCode ?? 0;
-        const errorMessage = typeof details.errorMessage === "string" ? details.errorMessage : "";
-        const failed = exitCode !== 0 || !!errorMessage;
-        const elapsed = details.elapsed != null ? formatElapsed(details.elapsed) : "?";
-        const bgFn = failed
-          ? (text: string) => theme.bg("toolErrorBg", text)
-          : (text: string) => theme.bg("toolSuccessBg", text);
-        const stats = (details.stats ?? null) as SessionStats | null;
-        const icon = failed
-          ? theme.fg("error", "✗")
-          : theme.fg("success", "✓");
-        const agentTag = details.agent ? theme.fg("dim", ` (${details.agent})`) : "";
-        const modelTag = stats?.model ? theme.fg("dim", ` (${stats.model})`) : "";
-        const titleSegment = `${icon} ${theme.fg("toolTitle", theme.bold(name))}${agentTag}${modelTag} ${theme.fg("dim", "—")} `;
-
-        // Success: icon already conveys "completed", so show "N tools · duration"
-        // like the in-process extension. Failure: surface the failure reason.
-        let header: string;
-        if (failed) {
-          const reason = errorMessage ? "failed (provider/agent error)" : `failed (exit ${exitCode})`;
-          header = `${titleSegment}${theme.fg("error", reason)} ${theme.fg("dim", `· ${elapsed}`)}`;
-        } else {
-          const toolPart = stats ? `${stats.toolCount} tools · ${elapsed}` : elapsed;
-          header = `${titleSegment}${theme.fg("dim", toolPart)}`;
-        }
-
-        // Usage line: ↑in ↓out R… W… $cost · context-gauge (color-coded by %).
-        let usageLine: string | null = null;
-        if (stats) {
-          const segs = usageSegments(stats).map((s) => theme.fg(USAGE_TONE[s.severity], s.text));
-          if (segs.length > 0) usageLine = segs.join(theme.fg("dim", " "));
-        }
-
-        const rawContent = typeof message.content === "string" ? message.content : "";
-
-        // Clean summary (remove follow-up ref and leading label for display)
-        const summary = stripResultPreamble(rawContent, {
-          name,
-          elapsedText: elapsed,
-          exitCode,
-        });
-
-        // Build content for the box
-        const contentLines = [header];
-        if (usageLine) contentLines.push(usageLine);
-
-        if (options.expanded) {
-          // Full view: complete summary + session info
-          if (summary) {
-            for (const line of summary.split("\n")) {
-              contentLines.push(line.slice(0, width - 6));
-            }
-          }
-          if (details.name || details.sessionFile) {
-            contentLines.push("");
-            if (details.name) {
-              contentLines.push(
-                theme.fg(
-                  "dim",
-                  `Follow up:  send_message({ to: "${details.name}", message: "…" })`,
-                ),
-              );
-            }
-            if (details.sessionFile) {
-              contentLines.push(theme.fg("muted", `Session file: ${details.sessionFile}`));
-            }
-          }
-        } else {
-          // Collapsed: preview + expand hint
-          if (summary) {
-            const previewLines = summary.split("\n").slice(0, 5);
-            for (const line of previewLines) {
-              contentLines.push(theme.fg("dim", line.slice(0, width - 6)));
-            }
-            const totalLines = summary.split("\n").length;
-            if (totalLines > 5) {
-              contentLines.push(theme.fg("muted", `… ${totalLines - 5} more lines`));
-            }
-          }
-          contentLines.push(theme.fg("muted", keyHint("app.tools.expand", "to expand")));
-        }
-
-        // Render via Box for background + padding, with blank line above for separation
-        const box = new Box(1, 1, bgFn);
-        box.addChild(new Text(contentLines.join("\n"), 0, 0));
-        return ["", ...box.render(width)];
+        return renderSubagentResult(
+          details,
+          typeof message.content === "string" ? message.content : "",
+          {
+            theme,
+            expandHint: () => keyHint("app.tools.expand", "to expand"),
+            expanded: options.expanded,
+            width,
+          },
+        );
       },
     };
   });
@@ -1470,37 +1401,18 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
   // ── subagent_message renderer ──
   pi.registerMessageRenderer("subagent_message", (message, options, theme) => {
-    const details = message.details as any;
+    const details = readSubagentMessageDetails(message.details);
     if (!details) return undefined;
 
     return {
       invalidate() {},
       render(width: number): string[] {
-        const name = details.name ?? "subagent";
-        const agentTag = details.agent ? theme.fg("dim", ` (${details.agent})`) : "";
-        const bgFn = (text: string) => theme.bg("toolSuccessBg", text);
-
-        const icon = theme.fg("accent", "↑");
-        const header = `${icon} ${theme.fg("toolTitle", theme.bold(name))}${agentTag} ${theme.fg("dim", "— waiting on your reply")}`;
-
-        const contentLines = [header];
-
-        if (options.expanded) {
-          contentLines.push("");
-          contentLines.push(details.message ?? "");
-          contentLines.push("");
-          contentLines.push(
-            theme.fg("dim", `Reply: send_message({ to: "${name}", message: "…" })`),
-          );
-        } else {
-          const preview = (details.message ?? "").split("\n")[0].slice(0, width - 10);
-          contentLines.push(theme.fg("dim", preview));
-          contentLines.push(theme.fg("muted", keyHint("app.tools.expand", "to expand")));
-        }
-
-        const box = new Box(1, 1, bgFn);
-        box.addChild(new Text(contentLines.join("\n"), 0, 0));
-        return ["", ...box.render(width)];
+        return renderSubagentMessage(details, {
+          theme,
+          expandHint: () => keyHint("app.tools.expand", "to expand"),
+          expanded: options.expanded,
+          width,
+        });
       },
     };
   });
