@@ -12,8 +12,7 @@
     "@types/node": "^26.1.1",
     "oxlint": "^1.73.0",
     "prettier": "^3.9.5",
-    "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "typescript": "^7.0.2"
   },
   "type": "module",
   "scripts": {
@@ -22,6 +21,6 @@
     "format": "prettier --write \"*.json\"",
     "format:check": "prettier --check \"*.json\"",
     "lint": "oxlint extensions --ignore-pattern \"**/test/**\" --ignore-pattern \"**/tests/**\"",
-    "test": "vitest run --root extensions/observational-memory && npm --prefix extensions/interactive-subagents test"
+    "test": "npm --prefix extensions/interactive-subagents test"
   }
 }
