@@ -10,7 +10,6 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
-    "oxfmt": "^0.58.0",
     "oxlint": "^1.73.0",
     "prettier": "^3.9.5",
     "typescript": "^7.0.2",
@@ -20,9 +19,9 @@
   "scripts": {
     "check": "tsc --noEmit",
     "check:load": "bun scripts/load-check.ts",
-    "format": "prettier --write \"*.json\" && oxfmt --write extensions/subagent",
-    "format:check": "prettier --check \"*.json\" && oxfmt --check extensions/subagent",
-    "lint": "oxlint extensions/subagent --ignore-pattern test",
-    "test": "bun test extensions/subagent && vitest run --root extensions/observational-memory"
+    "format": "prettier --write \"*.json\"",
+    "format:check": "prettier --check \"*.json\"",
+    "lint": "oxlint extensions --ignore-pattern \"**/test/**\" --ignore-pattern \"**/tests/**\"",
+    "test": "vitest run --root extensions/observational-memory && npm --prefix extensions/interactive-subagents test"
   }
 }
