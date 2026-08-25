@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import * as subagentsModule from "../index.ts";
+import type { RunningSubagent } from "../spawn/children.ts";
 import { listAgents, resolveAgentLaunch, RESUME_LAUNCH } from "../spawn/agents.ts";
 import { computeToolAllowlist, getToolExtensionPath } from "../spawn/sandbox.ts";
 import { describeResult } from "../render/result.ts";
@@ -1518,101 +1519,30 @@ describe("subagent interruption", () => {
   });
 
   it("routes an exact running name, and reports ambiguity rather than guessing", async () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
-    runningMap.clear();
+    const runningMap = new Map<string, RunningSubagent>();
 
-    try {
-      runningMap.set("a1", makeRunning({ id: "a1", name: "Worker", surface: "a1", sessionFile: "a1.jsonl" }));
-      runningMap.set("b2", makeRunning({ id: "b2", name: "Worker", surface: "b2", sessionFile: "b2.jsonl" }));
-      runningMap.set("c3", makeRunning({ id: "c3", name: "Scout", surface: "c3", sessionFile: "c3.jsonl" }));
+    runningMap.set("a1", makeRunning({ id: "a1", name: "Worker", surface: "a1", sessionFile: "a1.jsonl" }));
+    runningMap.set("b2", makeRunning({ id: "b2", name: "Worker", surface: "b2", sessionFile: "b2.jsonl" }));
+    runningMap.set("c3", makeRunning({ id: "c3", name: "Scout", surface: "c3", sessionFile: "c3.jsonl" }));
 
-      let sentSurface = "";
-      const send = sendMessageWithFakeMux((surface: string) => {
-        sentSurface = surface;
-      });
+    let sentSurface = "";
+    const send = sendMessageWithFakeMux(runningMap, (surface: string) => {
+      sentSurface = surface;
+    });
 
-      const exact = await send("Scout", "go");
-      assert.equal(exact.details.status, "steered");
-      assert.equal(sentSurface, "c3");
+    const exact = await send("Scout", "go");
+    assert.equal(exact.details.status, "steered");
+    assert.equal(sentSurface, "c3");
 
-      // Two panes share the name, so there is no right answer — say so rather
-      // than steering whichever happened to be first.
-      const ambiguous = await send("Worker", "go");
-      assert.equal(ambiguous.details.status, "transport-failed");
-      assert.match(ambiguous.details.reason, /Ambiguous subagent name/);
+    // Two panes share the name, so there is no right answer — say so rather
+    // than steering whichever happened to be first.
+    const ambiguous = await send("Worker", "go");
+    assert.equal(ambiguous.details.status, "transport-failed");
+    assert.match(ambiguous.details.reason, /Ambiguous subagent name/);
 
-      const missing = await send("Ghost", "go");
-      assert.equal(missing.details.status, "unknown-target");
-      assert.deepEqual(missing.details.known.slice().sort(), ["Scout", "Worker"]);
-    } finally {
-      runningMap.clear();
-    }
-  });
-
-  it("uniqueRunningName suffixes defaulted names that collide with running subagents", () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
-    runningMap.clear();
-
-    try {
-      // No collision: base name is returned untouched.
-      assert.equal(testApi.uniqueRunningName("worker"), "worker");
-
-      runningMap.set("a1", makeRunning({ id: "a1", name: "worker", surface: "a1" }));
-      assert.equal(testApi.uniqueRunningName("worker"), "worker-2");
-
-      runningMap.set("b2", makeRunning({ id: "b2", name: "worker-2", surface: "b2" }));
-      assert.equal(testApi.uniqueRunningName("worker"), "worker-3");
-
-      // A distinct base is unaffected by the worker collisions.
-      assert.equal(testApi.uniqueRunningName("scout"), "scout");
-    } finally {
-      runningMap.clear();
-    }
-  });
-
-  it("uniqueRunningName also avoids names already taken in the persistent registry", () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
-    const reserved = testApi.reservedNames as Set<string>;
-    runningMap.clear();
-    reserved.clear();
-
-    try {
-      // A finished subagent's name lives in the registry even though nothing is
-      // running — a fresh default must skip it so names stay unique session-wide.
-      const registryNames = new Set(["worker", "worker-2"]);
-      assert.equal(testApi.uniqueRunningName("worker", registryNames), "worker-3");
-      // A name not in the registry (or running/reserved) is unaffected.
-      assert.equal(testApi.uniqueRunningName("scout", registryNames), "scout");
-      // An empty registry behaves like before.
-      assert.equal(testApi.uniqueRunningName("worker", new Set()), "worker");
-    } finally {
-      runningMap.clear();
-      reserved.clear();
-    }
-  });
-
-  it("uniqueRunningName also avoids names reserved by in-flight parallel spawns", () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
-    const reserved = testApi.reservedNames as Set<string>;
-    runningMap.clear();
-    reserved.clear();
-
-    try {
-      // Simulate the first parallel spawn reserving its default name before it
-      // has registered in runningSubagents.
-      reserved.add(testApi.uniqueRunningName("scout")); // "scout"
-      // The second spawn, running concurrently, must not reuse it.
-      assert.equal(testApi.uniqueRunningName("scout"), "scout-2");
-      reserved.add("scout-2");
-      assert.equal(testApi.uniqueRunningName("scout"), "scout-3");
-    } finally {
-      runningMap.clear();
-      reserved.clear();
-    }
+    const missing = await send("Ghost", "go");
+    assert.equal(missing.details.status, "unknown-target");
+    assert.deepEqual(missing.details.known.slice().sort(), ["Scout", "Worker"]);
   });
 
   it("refuses an explicit spawn named parent rather than silently renaming it", async () => {
@@ -1632,29 +1562,23 @@ describe("subagent interruption", () => {
   });
 
   it("steers a running subagent by typing into its pane (newlines flattened)", async () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
-    runningMap.clear();
+    const runningMap = new Map<string, RunningSubagent>();
 
-    try {
-      runningMap.set("a1", makeRunning());
-      let sentSurface = "";
-      let sentText = "";
-      const send = sendMessageWithFakeMux((surface: string, text: string) => {
-        sentSurface = surface;
-        sentText = text;
-      });
+    runningMap.set("a1", makeRunning());
+    let sentSurface = "";
+    let sentText = "";
+    const send = sendMessageWithFakeMux(runningMap, (surface: string, text: string) => {
+      sentSurface = surface;
+      sentText = text;
+    });
 
-      // Each newline submits a turn in the child's editor, so a multi-line
-      // message would otherwise fire as several partial turns.
-      const out = await send("Worker", "do this\nthen that");
+    // Each newline submits a turn in the child's editor, so a multi-line
+    // message would otherwise fire as several partial turns.
+    const out = await send("Worker", "do this\nthen that");
 
-      assert.equal(out.details.status, "steered");
-      assert.equal(sentSurface, "pane-1");
-      assert.equal(sentText, "do this then that");
-    } finally {
-      runningMap.clear();
-    }
+    assert.equal(out.details.status, "steered");
+    assert.equal(sentSurface, "pane-1");
+    assert.equal(sentText, "do this then that");
   });
 
   describe("resuming a finished subagent", () => {
@@ -1671,49 +1595,41 @@ describe("subagent interruption", () => {
     }
 
     it("refuses to resume without a sandbox snapshot rather than relaunching unrestricted", async () => {
-      const testApi = (subagentsModule as any).__test__;
-      const runningMap = testApi.runningSubagents as Map<string, any>;
-      runningMap.clear();
+      const runningMap = new Map<string, RunningSubagent>();
       const { dir, sessionDir, sessionId } = withRegisteredSubagent("Scout");
 
       try {
         // No <session>.loadout.json was written, so the original sandbox cannot
         // be replayed. Resuming bare would load every global extension.
-        const send = sendMessageWithFakeMux(() => {}, sessionDir, sessionId);
+        const send = sendMessageWithFakeMux(runningMap, () => {}, sessionDir, sessionId);
         const out = await send("Scout", "carry on");
 
         assert.equal(out.details.status, "unresumable");
         assert.match(out.details.reason, /no sandbox snapshot/i);
       } finally {
-        runningMap.clear();
         rmSync(dir, { recursive: true, force: true });
       }
     });
 
     it("refuses when the registered session file is gone", async () => {
-      const testApi = (subagentsModule as any).__test__;
-      const runningMap = testApi.runningSubagents as Map<string, any>;
-      runningMap.clear();
+      const runningMap = new Map<string, RunningSubagent>();
       const { dir, sessionDir, sessionId } = withRegisteredSubagent("Scout", {
         sessionFileExists: false,
       });
 
       try {
-        const send = sendMessageWithFakeMux(() => {}, sessionDir, sessionId);
+        const send = sendMessageWithFakeMux(runningMap, () => {}, sessionDir, sessionId);
         const out = await send("Scout", "carry on");
 
         assert.equal(out.details.status, "unresumable");
         assert.match(out.details.reason, /session file is gone/i);
       } finally {
-        runningMap.clear();
         rmSync(dir, { recursive: true, force: true });
       }
     });
 
     it("steers instead of resuming when that session is still running under another name", async () => {
-      const testApi = (subagentsModule as any).__test__;
-      const runningMap = testApi.runningSubagents as Map<string, any>;
-      runningMap.clear();
+      const runningMap = new Map<string, RunningSubagent>();
       const { dir, sessionDir, sessionId, sessionFile } = withRegisteredSubagent("Scout");
 
       try {
@@ -1726,7 +1642,7 @@ describe("subagent interruption", () => {
         );
 
         let sentSurface = "";
-        const send = sendMessageWithFakeMux((surface: string) => {
+        const send = sendMessageWithFakeMux(runningMap, (surface: string) => {
           sentSurface = surface;
         }, sessionDir, sessionId);
         const out = await send("Scout", "carry on");
@@ -1735,7 +1651,6 @@ describe("subagent interruption", () => {
         assert.equal(out.details.name, "Scout Redux");
         assert.equal(sentSurface, "pane-9");
       } finally {
-        runningMap.clear();
         rmSync(dir, { recursive: true, force: true });
       }
     });
@@ -1747,17 +1662,24 @@ describe("subagent interruption", () => {
    * nothing shells out.
    */
   function sendMessageWithFakeMux(
+    running: Map<string, RunningSubagent>,
     send: (surface: string, command: string) => void,
     sessionDir = "/nonexistent",
     sessionId = "none",
   ) {
     const { api, registeredTools } = createMockExtensionApi();
     messagingTestApi.resetTransports();
-    const testApi = (subagentsModule as any).__test__;
+    const testApi = subagentsModule.__test__;
     registerSendMessage(
       api,
       "children",
-      testApi.createChildTransports(api, { send, muxAvailable: () => true }),
+      testApi.createChildTransports(api, {
+        // Read per delivery, exactly as production does, so a test that mutates
+        // its fixture mid-run sees what the transports would.
+        live: () => [...running.values()],
+        send,
+        muxAvailable: () => true,
+      }),
     );
     const tool = registeredTools.find((t: any) => t.name === "send_message");
     assert.ok(tool, "expected send_message to be registered");
@@ -1771,71 +1693,57 @@ describe("subagent interruption", () => {
   }
 
   it("delivers a steer message and forces local status waiting", async () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
+    const runningMap = new Map<string, RunningSubagent>();
     let sentSurface = "";
     let sentText = "";
-    runningMap.clear();
 
-    try {
-      runningMap.set("a1", makeRunning({}, { activeAt: 5_000 }));
+    runningMap.set("a1", makeRunning({}, { activeAt: 5_000 }));
 
-      const send = sendMessageWithFakeMux((surface: string, text: string) => {
-        sentSurface = surface;
-        sentText = text;
-      });
-      const result = await withMockedNowAsync(20_000, () => send("Worker", "keep going"));
+    const send = sendMessageWithFakeMux(runningMap, (surface: string, text: string) => {
+      sentSurface = surface;
+      sentText = text;
+    });
+    const result = await withMockedNowAsync(20_000, () => send("Worker", "keep going"));
 
-      assert.equal(sentSurface, "pane-1");
-      assert.equal(sentText, "keep going");
-      assert.equal(result.content[0].text.includes('Message delivered to running subagent "Worker"'), true);
-      assert.deepEqual(result.details, { status: "steered", name: "Worker" });
-      const snapshot = runningMap.get("a1").liveness.snapshot(20_000);
-      assert.equal(snapshot.kind, "waiting");
-      assert.equal(runningMap.has("a1"), true);
-    } finally {
-      runningMap.clear();
-    }
+    assert.equal(sentSurface, "pane-1");
+    assert.equal(sentText, "keep going");
+    assert.equal(result.content[0].text.includes('Message delivered to running subagent "Worker"'), true);
+    assert.deepEqual(result.details, { status: "steered", name: "Worker" });
+    const steered = runningMap.get("a1");
+    assert.ok(steered, "the fixture entry must still be live after a steer");
+    const snapshot = steered.liveness.snapshot(20_000);
+    assert.equal(snapshot.kind, "waiting");
+    assert.equal(runningMap.has("a1"), true);
   });
 
   it("requires a message when steering", async () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
-    runningMap.clear();
-    try {
-      runningMap.set("a1", makeRunning());
-      let sent = false;
-      const send = sendMessageWithFakeMux(() => {
-        sent = true;
-      });
-      const result = await send("Worker", "  ");
-      assert.equal(result.details.status, "empty-message");
-      assert.match(result.content[0].text, /`message` is required/);
-      assert.equal(sent, false, "an empty message must not reach the pane");
-    } finally {
-      runningMap.clear();
-    }
+    const runningMap = new Map<string, RunningSubagent>();
+    runningMap.set("a1", makeRunning());
+    let sent = false;
+    const send = sendMessageWithFakeMux(runningMap, () => {
+      sent = true;
+    });
+    const result = await send("Worker", "  ");
+    assert.equal(result.details.status, "empty-message");
+    assert.match(result.content[0].text, /`message` is required/);
+    assert.equal(sent, false, "an empty message must not reach the pane");
   });
 
   it("leaves status unchanged when steering delivery fails in the tool path", async () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
-    runningMap.clear();
+    const runningMap = new Map<string, RunningSubagent>();
 
-    try {
-      runningMap.set("a1", makeRunning({}, { activeAt: 5_000 }));
+    runningMap.set("a1", makeRunning({}, { activeAt: 5_000 }));
 
-      const send = sendMessageWithFakeMux(() => {
-        throw new Error("mux write failed");
-      });
-      const result = await withMockedNowAsync(20_000, () => send("Worker", "go"));
+    const send = sendMessageWithFakeMux(runningMap, () => {
+      throw new Error("mux write failed");
+    });
+    const result = await withMockedNowAsync(20_000, () => send("Worker", "go"));
 
-      assert.equal(result.details.status, "transport-failed");
-      assert.match(result.content[0].text, /Failed to deliver message/);
-      assert.equal(runningMap.get("a1").liveness.snapshot(20_000).kind, "active");
-    } finally {
-      runningMap.clear();
-    }
+    assert.equal(result.details.status, "transport-failed");
+    assert.match(result.content[0].text, /Failed to deliver message/);
+    const unchanged = runningMap.get("a1");
+    assert.ok(unchanged, "a failed steer must leave the entry in place");
+    assert.equal(unchanged.liveness.snapshot(20_000).kind, "active");
   });
 
   it("formats exit code 130 as an ordinary failure", () => {

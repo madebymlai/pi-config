@@ -20,6 +20,7 @@ import {
   readSubagentMessageDetails,
   renderSubagentMessage,
 } from "./render/subagent-message.ts";
+import { createChildren, type RunningSubagent } from "./spawn/children.ts";
 import { dirname, join, resolve } from "node:path";
 import {
   readFileSync,
@@ -72,7 +73,7 @@ import {
   formatStatusLine,
   renderStatusDigest,
 } from "./render/status.ts";
-import { createLiveness, getSubagentActivityFile, type SubagentLiveness } from "./observe/liveness.ts";
+import { createLiveness, getSubagentActivityFile } from "./observe/liveness.ts";
 import {
   registerSendMessage,
   type Delivery,
@@ -97,31 +98,25 @@ const SPAWN_GUIDANCE =
   "After spawning, end your turn or start other independent work, including further sub-agents " +
   "in parallel.";
 
-// Survive /reload: clear timers and abort poll loops from the previous module load.
-// /reload re-imports this file, giving fresh module-level state, but closures from
-// the old module keep running. See https://github.com/HazAT/pi-interactive-subagents/issues/5
-const WIDGET_INTERVAL_KEY = Symbol.for("pi-subagents/widget-interval");
-const STATUS_INTERVAL_KEY = Symbol.for("pi-subagents/status-interval");
+// Survive /reload: abort poll loops from the previous module load. /reload
+// re-imports this file, giving fresh module-level state, but closures from the old
+// module keep running. The interval handle is carried across the same boundary by
+// spawn/children.ts, which owns it.
+// See https://github.com/HazAT/pi-interactive-subagents/issues/5
 const POLL_ABORT_KEY = Symbol.for("pi-subagents/poll-abort-controller");
 
-{
-  const prevInterval = (globalThis as any)[WIDGET_INTERVAL_KEY];
-  if (prevInterval) {
-    clearInterval(prevInterval);
-    (globalThis as any)[WIDGET_INTERVAL_KEY] = null;
-  }
-  const prevStatusInterval = (globalThis as any)[STATUS_INTERVAL_KEY];
-  if (prevStatusInterval) {
-    clearInterval(prevStatusInterval);
-    (globalThis as any)[STATUS_INTERVAL_KEY] = null;
-  }
-  const prevAbort = (globalThis as any)[POLL_ABORT_KEY] as AbortController | undefined;
-  if (prevAbort) prevAbort.abort();
-  (globalThis as any)[POLL_ABORT_KEY] = new AbortController();
+function pollAbort() {
+  return globalThis as Record<symbol, AbortController | undefined>;
 }
 
-function getModuleAbortSignal(): AbortSignal {
-  return ((globalThis as any)[POLL_ABORT_KEY] as AbortController).signal;
+{
+  const prevAbort = pollAbort()[POLL_ABORT_KEY];
+  if (prevAbort) prevAbort.abort();
+  pollAbort()[POLL_ABORT_KEY] = new AbortController();
+}
+
+function getModuleAbortSignal() {
+  return pollAbort()[POLL_ABORT_KEY]!.signal;
 }
 
 const SubagentParams = Type.Object({
@@ -250,34 +245,8 @@ interface SubagentResult {
   stats?: SessionStats;
 }
 
-/**
- * State for a launched (but not yet completed) subagent.
- */
-interface RunningSubagent {
-  id: string;
-  name: string;
-  task: string;
-  agent?: string;
-  surface: string;
-  startTime: number;
-  sessionFile: string;
-  /** The generated shell script, kept so a launch can be inspected after the fact. */
-  launchScriptFile: string;
-  /** Aborts the watcher; the tool call's own signal is long gone by then. */
-  abortController: AbortController;
-  /** How it is doing. The activity file and the status state live behind this. */
-  liveness: SubagentLiveness;
-}
-
-/** All currently running subagents, keyed by id. */
-const runningSubagents = new Map<string, RunningSubagent>();
-
-// When this extension is loaded inside a subagent that itself spawns children
-// (e.g. a worker delegating to scout/researcher), `child/index.ts` runs in the
-// same process and needs to know whether this session still has children in
-// flight — so it can suppress auto-exit and keep the session open until they all
-// report back. Expose a live count through a process-global symbol that both
-// modules share. (child/index.ts reads it; if absent it assumes zero.)
+/** Who is live, what they are called, and who is watching them. */
+const children = createChildren();
 
 // ── Widget management ──
 
@@ -286,22 +255,16 @@ let latestCtx: ExtensionContext | null = null;
 /** Latest ExtensionAPI, used to deliver subagent messages from the watcher. */
 let latestPi: ExtensionAPI | null = null;
 
-/** Interval timer for widget re-renders. */
-let widgetInterval: ReturnType<typeof setInterval> | null = null;
-
-/** Interval timer for status transition checks. */
-let statusInterval: ReturnType<typeof setInterval> | null = null;
-
-function updateWidget() {
+/**
+ * Repaint the widget for the given set. `children` decides when this runs; the
+ * only caller outside its observer is the steer path, which changes how a
+ * subagent is doing without changing who is live.
+ */
+function paintWidget(live: readonly RunningSubagent[]) {
   if (!latestCtx?.hasUI) return;
 
-  if (runningSubagents.size === 0) {
+  if (live.length === 0) {
     latestCtx.ui.setWidget("subagent-status", undefined);
-    if (widgetInterval) {
-      clearInterval(widgetInterval);
-      widgetInterval = null;
-      (globalThis as any)[WIDGET_INTERVAL_KEY] = null;
-    }
     return;
   }
 
@@ -312,7 +275,7 @@ function updateWidget() {
         invalidate() {},
         render(width: number) {
           const now = Date.now();
-          const rows = Array.from(runningSubagents.values()).map((running) => ({
+          const rows = live.map((running) => ({
             name: running.name,
             agent: running.agent,
             elapsedMs: now - running.startTime,
@@ -338,37 +301,6 @@ function updateWidget() {
  * first positional message so that /skill: args land in messages[1..] and arrive
  * as standalone prompts in the child session.
  */
-/**
- * Names claimed by spawns that are mid-launch but not yet registered in
- * `runningSubagents`. Parallel `subagent` tool calls run their synchronous
- * prefix (name defaulting) before any of them finishes `launchSubagent` and
- * registers, so without this they'd all see an empty map and pick the same
- * name. Reserved synchronously when a default name is chosen and released once
- * the subagent registers (or its launch fails).
- */
-const reservedNames = new Set<string>();
-
-/**
- * Return `base`, or `base-2`, `base-3`, … so the result is unique within this
- * spawner session. Considers (a) currently-running subagents, (b) names
- * reserved by parallel in-flight spawns, and (c) every name already recorded in
- * the spawner's persistent registry — so a defaulted name never collides with a
- * finished subagent either. This lets `send_message({ to })` address any
- * subagent of this session unambiguously, running or finished.
- *
- * `registryNames` is the set of names already taken in the registry (empty when
- * there is no session file / artifact dir yet).
- */
-function uniqueRunningName(base: string, registryNames?: Set<string>): string {
-  const taken = new Set(Array.from(runningSubagents.values()).map((r) => r.name));
-  for (const reserved of reservedNames) taken.add(reserved);
-  if (registryNames) for (const n of registryNames) taken.add(n);
-  if (!taken.has(base)) return base;
-  let n = 2;
-  while (taken.has(`${base}-${n}`)) n++;
-  return `${base}-${n}`;
-}
-
 /**
  * Type a follow-up message into a running subagent's live pane. Newlines are
  * collapsed to spaces because each newline submits a turn in the child's TUI
@@ -409,72 +341,49 @@ function steerRunning(
   if ("error" in steer) return { status: "transport-failed", reason: steer.error };
 
   running.liveness.interrupted(now);
-  updateWidget();
+  paintWidget(children.live());
 
   return { status: "steered", name: running.name };
 }
 
-function startStatusRefresh(pi: ExtensionAPI) {
-  if (!statusConfig.enabled || statusInterval) return;
+/**
+ * Advance every subagent's status machine and report the transitions.
+ *
+ * Gated on `statusConfig.enabled` exactly as the old status interval was: when
+ * status is off, `tick()` is never called at all, so the machine does not
+ * advance behind a disabled display. This is the only ticker — observe/liveness
+ * documents that advancing from two places would fire one transition twice.
+ */
+function pumpStatus(live: readonly RunningSubagent[], now: number, pi: ExtensionAPI) {
+  if (!statusConfig.enabled) return;
 
-  statusInterval = setInterval(() => {
-    if (runningSubagents.size === 0) {
-      if (statusInterval) {
-        clearInterval(statusInterval);
-        statusInterval = null;
-        (globalThis as any)[STATUS_INTERVAL_KEY] = null;
-      }
-      return;
-    }
+  const transitionLines: string[] = [];
 
-    const transitionLines: string[] = [];
-    const now = Date.now();
-    let shouldRefreshWidget = false;
+  for (const running of live) {
+    const { transition, snapshot } = running.liveness.tick(now);
+    // liveness reports the transition; turning it into a sentence is this
+    // layer's job, which is what keeps observe/ from importing render/.
+    if (transition) transitionLines.push(formatStatusLine(running.name, snapshot, transition));
+  }
 
-    for (const running of runningSubagents.values()) {
-      const { kindChanged, transition, snapshot } = running.liveness.tick(now);
-      if (kindChanged) shouldRefreshWidget = true;
-      // liveness reports the transition; turning it into a sentence is this
-      // layer's job, which is what keeps observe/ from importing render/.
-      if (transition) transitionLines.push(formatStatusLine(running.name, snapshot, transition));
-    }
-
-    if (shouldRefreshWidget) updateWidget();
-
-    if (transitionLines.length > 0) {
-      const digest = renderStatusDigest(transitionLines, statusConfig.lineLimit);
-      pi.sendMessage(
-        {
-          customType: "subagent_status",
-          content: digest.content,
-          display: true,
-          details: { lines: digest.visibleLines, overflow: digest.overflow },
-        },
-        { triggerTurn: true, deliverAs: "steer" },
-      );
-    }
-  }, 1000);
-
-  (globalThis as any)[STATUS_INTERVAL_KEY] = statusInterval;
+  if (transitionLines.length > 0) {
+    const digest = renderStatusDigest(transitionLines, statusConfig.lineLimit);
+    pi.sendMessage(
+      {
+        customType: "subagent_status",
+        content: digest.content,
+        display: true,
+        details: { lines: digest.visibleLines, overflow: digest.overflow },
+      },
+      { triggerTurn: true, deliverAs: "steer" },
+    );
+  }
 }
 
 export const __test__ = {
   getShellReadyDelayMs,
-  uniqueRunningName,
-  reservedNames,
-  steerRunning,
   createChildTransports,
-  runningSubagents,
 };
-
-function startWidgetRefresh() {
-  if (widgetInterval) return;
-  updateWidget(); // immediate first render
-  widgetInterval = setInterval(() => {
-    updateWidget();
-  }, 1000);
-  (globalThis as any)[WIDGET_INTERVAL_KEY] = widgetInterval;
-}
 
 /**
  * Launch a subagent: creates the multiplexer pane, builds the command, and
@@ -649,7 +558,7 @@ async function launchSubagent(
   // This was already computed above so session placement, PI_CODING_AGENT_DIR, and cd agree.
   const cdPrefix = effectiveCwd ? `cd ${shellEscape(effectiveCwd)} && ` : "";
 
-  return runSubagent(pi, {
+  return startSubagent({
     id,
     name: params.name,
     task: params.task,
@@ -662,14 +571,13 @@ async function launchSubagent(
     startTime,
     command: cdPrefix + envPrefix + parts.join(" "),
     kind: "launch",
-    fromEntry: 0,
   });
 }
 
 /**
  * Watch a launched subagent until it exits. Polls for completion, extracts
  * the summary from the session file, cleans up the surface,
- * and removes the entry from runningSubagents.
+ * and closes its surface. `children` removes the entry when this settles.
  */
 /**
  * Detect a parent-directed message from a still-running subagent and notify the
@@ -737,11 +645,14 @@ interface SubagentRun {
   command: string;
   /** Names the generated script and its preamble, and nothing else. */
   kind: "launch" | "resume";
-  /** Passed to watchSubagent: a resumed run reports only the turns it added. */
-  fromEntry: number;
 }
 
-function runSubagent(pi: ExtensionAPI, run: SubagentRun): RunningSubagent {
+/**
+ * Send the launch command and build the entry for it. Deliberately does NOT
+ * register or watch: `children.launch` owns that ordering, so registration
+ * cannot drift ahead of or behind the watcher that removes the entry again.
+ */
+function startSubagent(run: SubagentRun): RunningSubagent {
   const scriptSuffix = run.kind === "resume" ? `resume-${Date.now()}` : run.id;
   const launchScriptFile = join(
     run.artifactDir,
@@ -780,49 +691,59 @@ function runSubagent(pi: ExtensionAPI, run: SubagentRun): RunningSubagent {
       interactive: run.interactive,
     }),
   };
-  runningSubagents.set(run.id, running);
-
-  // The widget and the status supervisor are idle until something is running.
-  startWidgetRefresh();
-  startStatusRefresh(pi);
-
-  watchSubagent(running, watcherAbort.signal, run.fromEntry)
-    .then((result) => {
-      updateWidget(); // reflect removal from the map immediately
-      pi.sendMessage(
-        {
-          customType: "subagent_result",
-          content: describeResult(result, running.name),
-          display: true,
-          details: {
-            name: running.name,
-            task: running.task,
-            agent: running.agent,
-            exitCode: result.exitCode,
-            elapsed: result.elapsed,
-            sessionFile: result.sessionFile,
-            ...(result.sessionId ? { sessionId: result.sessionId } : {}),
-            ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
-            ...(result.stats ? { stats: result.stats } : {}),
-          },
-        },
-        { triggerTurn: true, deliverAs: "steer" },
-      );
-    })
-    .catch((err) => {
-      updateWidget();
-      pi.sendMessage(
-        {
-          customType: "subagent_result",
-          content: `Sub-agent "${running.name}" error: ${err?.message ?? String(err)}`,
-          display: true,
-          details: { name: running.name, task: running.task, error: err?.message },
-        },
-        { triggerTurn: true, deliverAs: "steer" },
-      );
-    });
-
   return running;
+}
+
+/** Watch one subagent to completion. `children` removes it when this settles. */
+function watchRun(running: RunningSubagent, fromEntry: number) {
+  return watchSubagent(running, running.abortController.signal, fromEntry);
+}
+
+/**
+ * Announce a finished subagent. Runs after `children` has already removed the
+ * entry, so nothing here can observe a live child whose pane is closed.
+ */
+function reportResult(
+  pi: ExtensionAPI,
+  running: RunningSubagent,
+  result: SubagentResult | undefined,
+  error: unknown,
+) {
+  if (result) {
+    pi.sendMessage(
+      {
+        customType: "subagent_result",
+        content: describeResult(result, running.name),
+        display: true,
+        details: {
+          name: running.name,
+          task: running.task,
+          agent: running.agent,
+          exitCode: result.exitCode,
+          elapsed: result.elapsed,
+          sessionFile: result.sessionFile,
+          ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+          ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+          ...(result.stats ? { stats: result.stats } : {}),
+        },
+      },
+      { triggerTurn: true, deliverAs: "steer" },
+    );
+    return;
+  }
+
+  // watchSubagent resolves even on abort, so this is the genuinely unexpected
+  // path — a throw from the watcher itself rather than a subagent that failed.
+  const err = error as { message?: string } | undefined;
+  pi.sendMessage(
+    {
+      customType: "subagent_result",
+      content: `Sub-agent "${running.name}" error: ${err?.message ?? String(error)}`,
+      display: true,
+      details: { name: running.name, task: running.task, error: err?.message },
+    },
+    { triggerTurn: true, deliverAs: "steer" },
+  );
 }
 
 async function watchSubagent(
@@ -859,7 +780,6 @@ async function watchSubagent(
     const subagentSessionId = existsSync(sessionFile) ? getSessionId(sessionFile) : null;
 
     closeSurface(surface);
-    runningSubagents.delete(running.id);
 
     return {
       name,
@@ -876,7 +796,6 @@ async function watchSubagent(
     try {
       closeSurface(surface);
     } catch {}
-    runningSubagents.delete(running.id);
 
     if (signal.aborted) {
       return {
@@ -915,18 +834,26 @@ async function watchSubagent(
 function createChildTransports(
   pi: ExtensionAPI,
   deps: {
+    /**
+     * The live set, read per delivery rather than snapshotted. Required, not
+     * defaulted: an empty stand-in would silently disarm the guard below that
+     * keeps two processes off one .jsonl, and a missing argument would still
+     * compile.
+     */
+    live: () => readonly RunningSubagent[];
     send?: (surface: string, command: string) => void;
     muxAvailable?: () => boolean;
-  } = {},
+  },
 ) {
   const send = deps.send ?? sendCommand;
   const muxAvailable = deps.muxAvailable ?? isMuxAvailable;
-  const runningNames = () => [...new Set(Array.from(runningSubagents.values()).map((r) => r.name))];
+  const live = deps.live;
+  const runningNames = () => [...new Set(live().map((r) => r.name))];
 
   const steer: Transport = {
     known: runningNames,
     deliver(to, message) {
-      const matches = Array.from(runningSubagents.values()).filter((r) => r.name === to);
+      const matches = live().filter((r) => r.name === to);
       if (matches.length === 0) return null;
       if (matches.length > 1) {
         const candidates = matches.map((r) => `${r.name} [${r.id}]`).join(", ");
@@ -976,7 +903,7 @@ function createChildTransports(
 
       // Guard: never resume a session that is still running — two processes
       // mutating the same .jsonl corrupts it. Steer it by name instead.
-      for (const r of runningSubagents.values()) {
+      for (const r of live()) {
         if (resolve(r.sessionFile) === resolve(sessionPath)) {
           return steerRunning(r, message, send);
         }
@@ -1059,20 +986,26 @@ function createChildTransports(
       // operate where they did before.
       const resumeCdPrefix = loadout.cwd ? `cd ${shellEscape(loadout.cwd)} && ` : "";
 
-      runSubagent(pi, {
-        id,
-        name,
-        task: message,
-        surface,
-        sessionFile: sessionPath,
-        artifactDir,
-        activityFile,
-        interactive,
-        startTime,
-        command: resumeCdPrefix + resumeEnvPrefix + parts.join(" "),
-        kind: "resume",
+      await children.launch({
+        base: name,
+        preferred: name,
+        start: async () =>
+          startSubagent({
+            id,
+            name,
+            task: message,
+            surface,
+            sessionFile: sessionPath,
+            artifactDir,
+            activityFile,
+            interactive,
+            startTime,
+            command: resumeCdPrefix + resumeEnvPrefix + parts.join(" "),
+            kind: "resume",
+          }),
         // Report only what this run adds, not the transcript it inherited.
-        fromEntry: entryCountBefore,
+        watch: (running) => watchRun(running, entryCountBefore),
+        settled: (child, result, error) => reportResult(pi, child, result, error),
       });
 
       return { status: "resumed", name, sessionId: resumedSessionId };
@@ -1090,6 +1023,15 @@ const expandHintThunk = () => keyHint("app.tools.expand", "to expand");
 
 export default function subagentsExtension(pi: ExtensionAPI) {
   latestPi = pi;
+
+  // One tick drives both the widget and the status machine, and it runs only
+  // while something is live. Rebound on every module load: `observe` replaces
+  // rather than adds, so a /reload cannot leave the previous load's closure —
+  // holding its dead ExtensionContext — painting over the live one.
+  children.observe((live, now) => {
+    paintWidget(live);
+    pumpStatus(live, now, pi);
+  });
   // Capture the UI context for widget updates
   pi.on("session_start", (_event, ctx) => {
     latestCtx = ctx;
@@ -1097,30 +1039,17 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     // aborts the shared module poll-abort controller; install a fresh one so
     // subagents spawned in this session aren't watched against a dead signal.
     // See https://github.com/HazAT/pi-interactive-subagents/issues/5
-    const prevAbort = (globalThis as any)[POLL_ABORT_KEY] as AbortController | undefined;
+    const prevAbort = pollAbort()[POLL_ABORT_KEY];
     if (!prevAbort || prevAbort.signal.aborted) {
-      (globalThis as any)[POLL_ABORT_KEY] = new AbortController();
+      pollAbort()[POLL_ABORT_KEY] = new AbortController();
     }
   });
 
   // Clean up on session shutdown
   pi.on("session_shutdown", (_event, _ctx) => {
-    if (widgetInterval) {
-      clearInterval(widgetInterval);
-      widgetInterval = null;
-      (globalThis as any)[WIDGET_INTERVAL_KEY] = null;
-    }
-    if (statusInterval) {
-      clearInterval(statusInterval);
-      statusInterval = null;
-      (globalThis as any)[STATUS_INTERVAL_KEY] = null;
-    }
-    const moduleAbort = (globalThis as any)[POLL_ABORT_KEY] as AbortController | undefined;
+    const moduleAbort = pollAbort()[POLL_ABORT_KEY];
     if (moduleAbort) moduleAbort.abort();
-    for (const [_id, agent] of runningSubagents) {
-      agent.abortController?.abort();
-    }
-    runningSubagents.clear();
+    children.shutdown();
   });
 
   // The spawning tools are always registered here. Whether a child process can
@@ -1158,29 +1087,19 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         );
 
         // Default the cosmetic pane label to the agent name when omitted,
-        // disambiguating against running subagents, in-flight reservations, and
-        // every name already in the registry — so names stay unique across the
-        // whole session, running or finished. Reserve the chosen name
-        // synchronously (before any await) so parallel spawns don't collide.
-        let reservedName: string | null = null;
-        let launchName = params.name;
-        if (!launchName?.trim()) {
-          const registryNames = new Set(Object.keys(readNameRegistry(parentArtifactDir)));
-          launchName = uniqueRunningName(params.agent, registryNames);
-          reservedName = launchName;
-          reservedNames.add(reservedName);
-        }
-        params.name = launchName;
-
-        // Launch the subagent (creates pane, sends command). Release the name
-        // reservation once it registers in runningSubagents (or launch fails) —
-        // from then on uniqueRunningName tracks it via the running map.
-        let running;
-        try {
-          running = await launchSubagent(pi, { ...params, name: launchName }, ctx);
-        } finally {
-          if (reservedName) reservedNames.delete(reservedName);
-        }
+        // disambiguating against running subagents, in-flight claims, and every
+        // name already in the registry — so names stay unique across the whole
+        // session, running or finished. `children.launch` holds the claim across
+        // the await, which is what keeps parallel spawns off one name; the
+        // registry read is a thunk so a named spawn never pays for it.
+        const running = await children.launch({
+          base: params.agent,
+          preferred: params.name,
+          alsoTaken: () => Object.keys(readNameRegistry(parentArtifactDir)),
+          start: (name) => launchSubagent(pi, { ...params, name }, ctx),
+          watch: (child) => watchRun(child, 0),
+          settled: (child, result, error) => reportResult(pi, child, result, error),
+        });
 
         // Persist name → session so send_message({ to }) can resume this
         // subagent after it finishes (and after a pi restart). Done at launch,
@@ -1196,7 +1115,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             {
               type: "text",
               text:
-                `Sub-agent "${params.name}" launched and is now running in the background. ` +
+                `Sub-agent "${running.name}" launched and is now running in the background. ` +
                 `Do NOT generate or assume any results — you have no idea what the sub-agent will do or produce. ` +
                 `The results will be delivered to you automatically as a steer message when the sub-agent finishes. ` +
                 `Until then, move on to other work or tell the user you're waiting.`,
@@ -1204,7 +1123,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           ],
           details: {
             id: running.id,
-            name: params.name,
+            name: running.name,
             task: params.task,
             agent: params.agent,
             sessionFile: running.sessionFile,
@@ -1271,7 +1190,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       },
     });
 
-  registerSendMessage(pi, "children", createChildTransports(pi));
+  registerSendMessage(pi, "children", createChildTransports(pi, { live: () => children.live() }));
 
   // /subagent command — spawn a subagent by name
   pi.registerCommand("subagent", {
