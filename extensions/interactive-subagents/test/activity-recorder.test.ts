@@ -230,6 +230,75 @@ describe("child/activity-recorder.ts", () => {
     });
   });
 
+  describe("how long it has been busy", () => {
+    it("starts the busy clock when work begins and keeps it across a scope change", () => {
+      withTempDir((dir) => {
+        const { recorder, read, advance } = makeRecorder(dir);
+        recorder.sessionStart();
+        recorder.agentStart();
+        const startedAt = read()?.activeSince;
+        assert.ok(startedAt, "going active must stamp when it started");
+
+        advance(3_000);
+        recorder.turnStart(1);
+        assert.equal(read()?.activeSince, startedAt, "a new turn is the same stretch of work");
+      });
+    });
+
+    it("restarts the busy clock for a new tool call", () => {
+      withTempDir((dir) => {
+        // The parent renders this as "active (bash 4s)", so it has to mean how
+        // long THIS tool has run, not how long the agent has been up.
+        const { recorder, read, advance, at } = makeRecorder(dir);
+        recorder.sessionStart();
+        recorder.agentStart();
+        recorder.turnStart(1);
+
+        advance(3_000);
+        recorder.toolExecutionStart("call-1", "bash");
+        assert.equal(read()?.activeSince, at(), "a tool call is its own stretch of work");
+      });
+    });
+  });
+
+  describe("what it is busy with", () => {
+    it("does not let a new turn hide a tool that is still running", () => {
+      withTempDir((dir) => {
+        const { recorder, read } = makeRecorder(dir);
+        recorder.sessionStart();
+        recorder.agentStart();
+        recorder.turnStart(1);
+        recorder.toolExecutionStart("call-1", "bash");
+
+        recorder.turnStart(2);
+        assert.equal(read()?.activeScope, "tool", "the tool is the more specific answer");
+        assert.equal(read()?.toolName, "bash");
+      });
+    });
+
+    it("remembers which tool is running when later events omit it", () => {
+      withTempDir((dir) => {
+        // pi does not repeat the tool identity on every event, so dropping it
+        // would blank the label mid-call.
+        const { recorder, read } = makeRecorder(dir);
+        recorder.sessionStart();
+        recorder.agentStart();
+        recorder.toolExecutionStart("call-1", "bash");
+
+        recorder.toolExecutionUpdate();
+        assert.equal(read()?.toolName, "bash", "an update without a name must not erase it");
+        assert.equal(read()?.toolCallId, "call-1");
+
+        recorder.toolResult();
+        assert.equal(read()?.toolName, "bash");
+
+        recorder.toolExecutionEnd();
+        assert.equal(read()?.toolName, "bash", "the name still matters after the call ends");
+        assert.equal(read()?.toolCallId, "call-1");
+      });
+    });
+  });
+
   describe("durability", () => {
     it("advances the sequence on every write, so a reader can order them", () => {
       withTempDir((dir) => {
@@ -290,6 +359,29 @@ describe("child/activity-recorder.ts", () => {
         recorder.agentEndWaiting();
 
         assert.equal(existsSync(join(blocker, "activity.json")), false);
+      });
+    });
+
+    it("stays given up once it has given up", () => {
+      withTempDir((dir) => {
+        const blocker = join(dir, "blocked");
+        writeFileSync(blocker, "not a directory", "utf8");
+        const activityFile = join(blocker, "activity.json");
+        const { recorder } = makeRecorder(dir, { file: activityFile });
+
+        // Exactly MAX_WRITE_FAILURES attempts, so this pins where the limit is
+        // rather than just that one exists. One fewer and it should recover.
+        recorder.sessionStart();
+        recorder.agentStart();
+        recorder.turnStart(1);
+
+        // The obstruction clears, but a recorder that gave up does not come back:
+        // its file would be missing the whole run and read as a lie.
+        rmSync(blocker, { force: true });
+        recorder.toolExecutionStart("call-1", "bash");
+        recorder.agentEndWaiting();
+
+        assert.equal(existsSync(activityFile), false, "a disabled recorder must stay disabled");
       });
     });
   });
