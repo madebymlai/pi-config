@@ -148,6 +148,66 @@ describe("liveness.ts", () => {
       });
     });
 
+    it("reports a finished subagent as waiting, labelled done", () => {
+      withTempDir((dir) => {
+        const { liveness, write } = makeLiveness(dir);
+        write({
+          updatedAt: 5_000,
+          phase: "done",
+          latestEvent: "session_shutdown",
+          activeScope: undefined,
+          agentActive: false,
+          turnActive: false,
+          toolActive: false,
+        });
+        liveness.observe(5_000);
+
+        const snapshot = liveness.snapshot(5_000);
+        assert.equal(snapshot.kind, "waiting");
+        assert.equal(snapshot.statusLabel, "done");
+      });
+    });
+
+    it("stalls a subagent that reports starting and never progresses", () => {
+      withTempDir((dir) => {
+        // Distinct from a missing file: the subagent is writing, it just never
+        // gets past startup. The watchdog has to fire on the file's own claim.
+        const { liveness, write } = makeLiveness(dir);
+        write({
+          updatedAt: 1_000,
+          phase: "starting",
+          latestEvent: "session_start",
+          activeScope: undefined,
+          turnActive: false,
+          toolActive: false,
+        });
+        liveness.observe(1_000);
+
+        assert.equal(liveness.snapshot(1_000).kind, "starting");
+        assert.equal(liveness.snapshot(1_000 + SNAPSHOT_STALLED_AFTER_MS - 1).kind, "starting");
+        assert.equal(liveness.snapshot(1_000 + SNAPSHOT_STALLED_AFTER_MS).kind, "stalled");
+      });
+    });
+
+    it("stalls once a previously healthy subagent stops reporting for long enough", () => {
+      withTempDir((dir) => {
+        const { liveness, write, remove } = makeLiveness(dir);
+        write({ updatedAt: 5_000, activeSince: 5_000 });
+        liveness.tick(5_000);
+        assert.equal(liveness.snapshot(5_000).kind, "active");
+
+        remove();
+        liveness.observe(6_000);
+        assert.equal(liveness.snapshot(6_000).kind, "active", "brief loss holds the last healthy kind");
+
+        assert.equal(
+          liveness.snapshot(6_000 + SNAPSHOT_STALLED_AFTER_MS).kind,
+          "stalled",
+          "but stale knowledge has to expire",
+        );
+      });
+    });
+
     it("keeps the last healthy kind during transient snapshot loss", () => {
       withTempDir((dir) => {
         const { liveness, write, remove } = makeLiveness(dir);
@@ -187,6 +247,33 @@ describe("liveness.ts", () => {
   });
 
   describe("ordering", () => {
+    it("rejects a snapshot older than one already folded in", () => {
+      withTempDir((dir) => {
+        const { liveness, write } = makeLiveness(dir);
+        write({
+          updatedAt: 10_000,
+          sequence: 5,
+          phase: "waiting",
+          waitingSince: 10_000,
+          latestEvent: "await_reply",
+          activeScope: undefined,
+          toolActive: false,
+        });
+        liveness.observe(10_000);
+        assert.equal(liveness.snapshot(10_000).kind, "waiting");
+
+        // A write that lost the race: strictly older, so it must not win.
+        write({ updatedAt: 9_000, sequence: 4, activeSince: 9_000 });
+        liveness.observe(11_000);
+        assert.equal(liveness.snapshot(11_000).kind, "waiting", "an older snapshot must not resurrect active");
+
+        // Same millisecond, lower sequence: also older, by the tiebreak.
+        write({ updatedAt: 10_000, sequence: 4, activeSince: 10_000 });
+        liveness.observe(12_000);
+        assert.equal(liveness.snapshot(12_000).kind, "waiting", "sequence breaks the millisecond tie");
+      });
+    });
+
     it("orders same-millisecond snapshots by sequence", () => {
       withTempDir((dir) => {
         const { liveness, write } = makeLiveness(dir);
