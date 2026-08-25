@@ -23,7 +23,7 @@
   },
   "pi": {
     "extensions": [
-      "./pi-extension/subagents/index.ts"
+      "./index.ts"
     ]
   }
 }

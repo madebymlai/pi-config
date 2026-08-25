@@ -32,7 +32,7 @@ import {
   readScreenAsync,
   closeSurface,
   shellEscape,
-} from "../../pi-extension/subagents/tmux.ts";
+} from "../../tmux.ts";
 
 // Re-export tmux primitives for tests
 export {
@@ -63,7 +63,7 @@ const TEST_AGENTS_SRC = join(HARNESS_DIR, "agents");
  * edits are always the code under test, regardless of what pi-packages are
  * installed on the host.
  */
-const EXTENSION_SOURCE = join(PROJECT_ROOT, "pi-extension", "subagents", "index.ts");
+const EXTENSION_SOURCE = join(PROJECT_ROOT, "index.ts");
 
 // ── Configuration ──
 

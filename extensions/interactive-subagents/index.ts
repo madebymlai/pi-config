@@ -61,10 +61,10 @@ import {
   type SubagentActivityState,
 } from "./activity.ts";
 
-/** Absolute path to `pi-extension/subagents`. https://github.com/nodejs/node/issues/37845 */
+/** Absolute path to this extension's directory. https://github.com/nodejs/node/issues/37845 */
 const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url));
-// <extensions>/interactive-subagents/pi-extension/subagents -> <extensions>
-const SIBLING_EXTENSIONS_DIR = resolve(SUBAGENTS_DIR, "..", "..", "..");
+// <extensions>/interactive-subagents -> <extensions>
+const SIBLING_EXTENSIONS_DIR = resolve(SUBAGENTS_DIR, "..");
 
 // Survive /reload: clear timers and abort poll loops from the previous module load.
 // /reload re-imports this file, giving fresh module-level state, but closures from
@@ -255,7 +255,7 @@ const SUBAGENT_ALLOWLIST: Set<string> | null = (() => {
 })();
 
 function getBundledAgentsDir(): string {
-  return join(SUBAGENTS_DIR, "../../agents");
+  return join(SUBAGENTS_DIR, "agents");
 }
 
 function getFrontmatterValue(frontmatter: string, key: string): string | undefined {
