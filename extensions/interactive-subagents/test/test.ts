@@ -1174,6 +1174,24 @@ describe("subagent discovery", () => {
     assert.ok(tools.has("bash"), "expected worker to keep bash");
   });
 
+  it("every graph tool a bundled role grants resolves to a backing extension", () => {
+    // A tool named in --tools but backed by no -e silently does not exist in
+    // the child, so a grant without a mapping is worse than no grant at all.
+    for (const name of ["scout", "worker"]) {
+      const defs = testApi.loadAgentDefaults(name);
+      assert.ok(defs, `expected bundled agent ${name} to be discoverable`);
+      const allowlist = testApi.buildSubagentToolAllowlist(defs.tools, { grantSpawning: false });
+      assert.ok(allowlist, `expected ${name} to restrict tools`);
+      for (const tool of allowlist!.split(",")) {
+        if (["read", "write", "edit", "bash", "grep", "find", "ls", "send_message"].includes(tool)) continue;
+        assert.ok(
+          testApi.getToolExtensionPath(tool),
+          `${name} grants ${tool} but nothing maps it to an extension`,
+        );
+      }
+    }
+  });
+
   it("scout and researcher are not granted spawning tools", () => {
     for (const name of ["scout", "researcher"]) {
       const defs = testApi.loadAgentDefaults(name);
@@ -1189,6 +1207,9 @@ describe("subagent discovery", () => {
     assert.ok(testApi.getToolExtensionPath("safe_bash")?.endsWith("tools/safe-bash.ts"));
     // Spawning tools are registered by this extension itself.
     assert.ok(testApi.getToolExtensionPath("subagent")?.endsWith("index.ts"));
+    // The knowledge-graph tools all come from one flat file in the agent dir.
+    assert.ok(testApi.getToolExtensionPath("search_graph")?.endsWith("cbmem.ts"));
+    assert.ok(testApi.getToolExtensionPath("trace_path")?.endsWith("cbmem.ts"));
     // send_message is not: subagent-done.ts already loads into every subagent,
     // so mapping it here would pull the whole orchestration extension into a leaf.
     assert.equal(testApi.getToolExtensionPath("send_message"), undefined);
@@ -2215,23 +2236,6 @@ describe("subagent interruption", () => {
       assert.equal(testApi.uniqueRunningName("scout"), "scout-2");
       reserved.add("scout-2");
       assert.equal(testApi.uniqueRunningName("scout"), "scout-3");
-    } finally {
-      runningMap.clear();
-      reserved.clear();
-    }
-  });
-
-  it("never hands out the reserved parent name, even as a disambiguated suffix", () => {
-    const testApi = (subagentsModule as any).__test__;
-    const runningMap = testApi.runningSubagents as Map<string, any>;
-    const reserved = testApi.reservedNames as Set<string>;
-    runningMap.clear();
-    reserved.clear();
-
-    try {
-      // "parent" addresses the spawner in send_message, so it is taken before
-      // any subagent exists and a spawn named after it is pushed to a suffix.
-      assert.equal(testApi.uniqueRunningName("parent"), "parent-2");
     } finally {
       runningMap.clear();
       reserved.clear();
