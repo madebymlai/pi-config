@@ -22,6 +22,7 @@ import {
   type UsageSeverity,
 } from "./render/result.ts";
 import { getAgentConfigDir, paths } from "./paths.ts";
+import { loadStatusConfig } from "./config.ts";
 import { computeToolAllowlist, promptArgs, sandboxArgs, slugify } from "./spawn/sandbox.ts";
 import {
   listAgents,
@@ -57,7 +58,6 @@ import {
   capStatusLines,
   formatStatusAggregate,
   formatTransitionLine,
-  loadStatusConfig,
 } from "./render/status.ts";
 import { createLiveness, getSubagentActivityFile, type SubagentLiveness } from "./observe/liveness.ts";
 import {

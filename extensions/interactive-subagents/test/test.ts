@@ -43,9 +43,8 @@ import {
   formatStatusAggregate,
   formatStatusLine,
   formatTransitionLine,
-  loadStatusConfig,
-  parseStatusConfig,
 } from "../render/status.ts";
+import { loadStatusConfig } from "../config.ts";
 import type { StatusSnapshot } from "../observe/status-snapshot.ts";
 import { createSubagentActivityRecorder, writeSubagentActivityFile } from "../child/activity-recorder.ts";
 import { readSubagentActivityFile } from "../observe/activity-reader.ts";
@@ -508,9 +507,11 @@ describe("status.ts", () => {
     ...over,
   });
   it("parses strict config objects", () => {
-    const disabled = parseStatusConfig({ status: { enabled: false } });
+    const dir = createTestDir();
+    const configPath = join(dir, "config.json");
+    writeFileSync(configPath, JSON.stringify({ status: { enabled: false } }), "utf8");
 
-    assert.deepEqual(disabled, {
+    assert.deepEqual(loadStatusConfig(configPath, join(dir, "missing.json")), {
       enabled: false,
       lineLimit: 4,
     });
@@ -544,12 +545,17 @@ describe("status.ts", () => {
   });
 
   it("fails fast for invalid config shapes", () => {
+    const dir = createTestDir();
+    const missing = join(dir, "missing.json");
+    const load = (raw: unknown) => {
+      const configPath = join(dir, `config-${Math.random()}.json`);
+      writeFileSync(configPath, JSON.stringify(raw), "utf8");
+      return () => loadStatusConfig(configPath, missing);
+    };
+
+    assert.throws(load({ status: { enabled: "false" } }), /status\.enabled must be a boolean/);
     assert.throws(
-      () => parseStatusConfig({ status: { enabled: "false" } }),
-      /status\.enabled must be a boolean/,
-    );
-    assert.throws(
-      () => parseStatusConfig({ status: { enabled: true, defaultCadenceSeconds: 60 } }),
+      load({ status: { enabled: true, defaultCadenceSeconds: 60 } }),
       /status has unsupported key\(s\): defaultCadenceSeconds/,
     );
   });
