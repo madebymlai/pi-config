@@ -1273,7 +1273,7 @@ describe("subagent-done.ts", () => {
       }
     });
 
-    it("writes a .ask signal with name/agent/question and does NOT shut the session down", async () => {
+    it("writes a .message signal with name/agent/message and does NOT shut the session down", async () => {
       const dir = createTestDir();
       const sessionFile = join(dir, "s.jsonl");
       const { mock, restore } = setupSubagentExtension(sessionFile);
@@ -1290,13 +1290,13 @@ describe("subagent-done.ts", () => {
         );
 
         assert.equal(shutdownCalled, false, "messaging the parent must keep the session open");
-        assert.equal(out.details.status, "asked");
+        assert.equal(out.details.status, "sent-to-parent");
         assert.match(out.content[0].text, /wait/i);
 
-        const askFile = `${sessionFile}.ask`;
-        assert.ok(existsSync(askFile), ".ask signal file should be written");
-        const payload = JSON.parse(readFileSync(askFile, "utf-8"));
-        assert.equal(payload.question, "Which API base URL?");
+        const messageFile = `${sessionFile}.message`;
+        assert.ok(existsSync(messageFile), ".message signal file should be written");
+        const payload = JSON.parse(readFileSync(messageFile, "utf-8"));
+        assert.equal(payload.message, "Which API base URL?");
         assert.equal(payload.name, "scout-2");
         assert.equal(payload.agent, "scout");
         // No .exit sidecar — the session is not exiting.
@@ -1350,7 +1350,7 @@ describe("subagent-done.ts", () => {
           undefined,
           { shutdown() {} },
         );
-        assert.equal(out.details.status, "asked", "the parent transport should have claimed it");
+        assert.equal(out.details.status, "sent-to-parent", "the parent transport should have claimed it");
       };
       return { emit, ask, restore };
     }
@@ -1360,7 +1360,7 @@ describe("subagent-done.ts", () => {
       const { emit, ask, restore } = setupCapturingExtension(join(dir, "s.jsonl"));
       try {
         emit("agent_start");
-        await ask(); // sets awaitingAnswer mid-run
+        await ask(); // sets awaitingReply mid-run
         // Reply arrives MID-RUN as a steer: input fires, no new agent_start.
         emit("input");
         let shutdown = false;

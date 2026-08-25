@@ -61,7 +61,7 @@ describe("messaging.ts", () => {
   describe("routing", () => {
     it("delivers to the transport that claims the recipient", async () => {
       const children = fakeTransport(["scout"], { status: "steered", name: "scout" });
-      const parent = fakeTransport([PARENT], { status: "asked" });
+      const parent = fakeTransport([PARENT], { status: "sent-to-parent" });
       const tool = sendMessageTool(["children", [children]], ["parent", [parent]]);
 
       const out = await tool.execute(
@@ -79,7 +79,7 @@ describe("messaging.ts", () => {
 
     it("routes `parent` upward even when children are addressable", async () => {
       const children = fakeTransport(["scout"], { status: "steered", name: "scout" });
-      const parent = fakeTransport([PARENT], { status: "asked" });
+      const parent = fakeTransport([PARENT], { status: "sent-to-parent" });
       const tool = sendMessageTool(["children", [children]], ["parent", [parent]]);
 
       const out = await tool.execute(
@@ -90,7 +90,7 @@ describe("messaging.ts", () => {
         ctx,
       );
 
-      assert.equal(out.details.status, "asked");
+      assert.equal(out.details.status, "sent-to-parent");
       assert.deepEqual(parent.delivered, [[PARENT, "which base url?"]]);
       assert.deepEqual(children.delivered, []);
     });
@@ -131,12 +131,12 @@ describe("messaging.ts", () => {
       // subagent called "parent". Refusing the name at spawn time cannot undo
       // that, so routing itself must keep the name for the parent transport.
       const impostor = fakeTransport([PARENT], { status: "resumed", name: PARENT, sessionId: "s1" });
-      const parent = fakeTransport([PARENT], { status: "asked" });
+      const parent = fakeTransport([PARENT], { status: "sent-to-parent" });
       const tool = sendMessageTool(["children", [impostor]], ["parent", [parent]]);
 
       const out = await tool.execute("c1", { to: PARENT, message: "hi" }, undefined, undefined, ctx);
 
-      assert.equal(out.details.status, "asked");
+      assert.equal(out.details.status, "sent-to-parent");
       assert.deepEqual(impostor.delivered, [], "a child transport must not serve the reserved name");
     });
 
@@ -165,7 +165,7 @@ describe("messaging.ts", () => {
     });
 
     it("says so when nothing is addressable yet", async () => {
-      const tool = sendMessageTool(["children", [fakeTransport([], { status: "asked" })]]);
+      const tool = sendMessageTool(["children", [fakeTransport([], { status: "sent-to-parent" })]]);
 
       const out = await tool.execute("c1", { to: "scout", message: "hi" }, undefined, undefined, ctx);
 
@@ -217,7 +217,7 @@ describe("messaging.ts", () => {
           throw new Error("corrupt registry");
         },
       };
-      const parent = fakeTransport([PARENT], { status: "asked" });
+      const parent = fakeTransport([PARENT], { status: "sent-to-parent" });
       const tool = sendMessageTool(["children", [broken]], ["parent", [parent]]);
 
       const reached = await tool.execute("c1", { to: "anything", message: "hi" }, undefined, undefined, ctx);
@@ -292,7 +292,7 @@ describe("messaging.ts", () => {
 
     it("lets a second contributor add reach without displacing the first", async () => {
       const children = fakeTransport(["scout"], { status: "steered", name: "scout" });
-      const parent = fakeTransport([PARENT], { status: "asked" });
+      const parent = fakeTransport([PARENT], { status: "sent-to-parent" });
 
       sendMessageTool(["children", [children]]);
       const tool = sendMessageTool(["parent", [parent]]);
@@ -305,7 +305,7 @@ describe("messaging.ts", () => {
       assert.equal(
         (await tool.execute("c2", { to: PARENT, message: "b" }, undefined, undefined, ctx)).details
           .status,
-        "asked",
+        "sent-to-parent",
       );
     });
   });
@@ -324,7 +324,7 @@ describe("messaging.ts", () => {
       const outcomes: Delivery[] = [
         { status: "steered", name: "scout" },
         { status: "resumed", name: "scout", sessionId: "s1" },
-        { status: "asked" },
+        { status: "sent-to-parent" },
         { status: "no-parent" },
         { status: "unknown-target", known: ["scout"] },
         { status: "empty-message" },

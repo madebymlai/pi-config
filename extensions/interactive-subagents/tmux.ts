@@ -265,7 +265,7 @@ export interface PollResult {
  * sidecar and are detected via the terminal sentinel instead.
  *
  * Note: messaging the parent does NOT write a `.exit` sidecar — it keeps the session
- * open and signals the parent via a separate `.ask` file (see deliverPendingQuestion).
+ * open and signals the parent via a separate `.message` file (see deliverPendingMessage).
  */
 function interpretExitSidecar(data: any): PollResult {
   if (data?.type === "error") {

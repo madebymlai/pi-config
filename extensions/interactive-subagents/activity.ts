@@ -20,7 +20,7 @@ export type SubagentActivityEvent =
   | "tool_execution_update"
   | "tool_result"
   | "tool_execution_end"
-  | "ask_question"
+  | "await_reply"
   | "session_shutdown";
 
 export interface SubagentActivityState {
@@ -69,7 +69,7 @@ export interface SubagentActivityRecorder {
   toolExecutionUpdate(toolCallId?: string, toolName?: string): void;
   toolResult(toolCallId?: string, toolName?: string): void;
   toolExecutionEnd(toolCallId?: string, toolName?: string): void;
-  askQuestion(): void;
+  awaitReply(): void;
   sessionShutdown(reason: SubagentShutdownReason): void;
 }
 
@@ -93,7 +93,7 @@ const KNOWN_EVENTS = new Set<SubagentActivityEvent>([
   "tool_execution_update",
   "tool_result",
   "tool_execution_end",
-  "ask_question",
+  "await_reply",
   "session_shutdown",
 ]);
 const MAX_ACTIVITY_STRING_LENGTH = 200;
@@ -236,7 +236,7 @@ function createNoopRecorder(): SubagentActivityRecorder {
     toolExecutionUpdate() {},
     toolResult() {},
     toolExecutionEnd() {},
-    askQuestion() {},
+    awaitReply() {},
     sessionShutdown() {},
   };
 }
@@ -494,11 +494,11 @@ export function createSubagentActivityRecorder(params: {
         refreshActiveScope(current);
       }, "immediate");
     },
-    askQuestion() {
-      // The subagent paused to ask the orchestrator a question. Park it in the
-      // "waiting" phase (do NOT disable the recorder) so the status widget shows
-      // it as waiting and recording resumes when the answer arrives.
-      record("ask_question", (current, observedAt) => {
+    awaitReply() {
+      // The subagent messaged its parent and is now blocked on the reply. Park
+      // it in the "waiting" phase (do NOT disable the recorder) so the status
+      // widget shows it waiting, and recording resumes when the reply arrives.
+      record("await_reply", (current, observedAt) => {
         clearActiveState(current);
         current.phase = "waiting";
         current.waitingSince = observedAt;

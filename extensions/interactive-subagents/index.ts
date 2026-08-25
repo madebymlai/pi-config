@@ -269,7 +269,7 @@ const RUNNING_CHILDREN_COUNT_KEY = Symbol.for("pi-subagents/running-children-cou
 
 /** Latest ExtensionContext from session_start, used for widget updates. */
 let latestCtx: ExtensionContext | null = null;
-/** Latest ExtensionAPI, used to deliver subagent questions from the watcher. */
+/** Latest ExtensionAPI, used to deliver subagent messages from the watcher. */
 let latestPi: ExtensionAPI | null = null;
 
 /** Interval timer for widget re-renders. */
@@ -664,23 +664,23 @@ async function launchSubagent(
 /**
  * Detect a parent-directed message from a still-running subagent and notify the
  * orchestrator without ending the subagent. Each subagent has its own
- * `${sessionFile}.ask` file and its own watcher, so parallel questions from
- * multiple subagents are delivered independently. The file is deleted after
- * delivery so it fires once per question (a subagent may ask again later).
+ * `${sessionFile}.message` file and its own watcher, so messages from several
+ * subagents arrive independently. The file is deleted after delivery so it
+ * fires once per message (a subagent may message again later).
  */
-function deliverPendingQuestion(running: RunningSubagent): void {
-  const askFile = `${running.sessionFile}.ask`;
+function deliverPendingMessage(running: RunningSubagent): void {
+  const messageFile = `${running.sessionFile}.message`;
   let payload: any = null;
   try {
-    if (!existsSync(askFile)) return;
-    payload = JSON.parse(readFileSync(askFile, "utf-8"));
+    if (!existsSync(messageFile)) return;
+    payload = JSON.parse(readFileSync(messageFile, "utf-8"));
   } catch {
     // Malformed/partway-written file — drop it and move on.
   }
   try {
-    unlinkSync(askFile);
+    unlinkSync(messageFile);
   } catch {}
-  if (!payload?.question) return;
+  if (!payload?.message) return;
 
   const name = running.name; // unique per session (deduped at spawn) — targets the reply
   const sessionId = existsSync(running.sessionFile) ? getSessionId(running.sessionFile) : null;
@@ -689,13 +689,13 @@ function deliverPendingQuestion(running: RunningSubagent): void {
 
   latestPi?.sendMessage(
     {
-      customType: "subagent_question",
-      content: `Sub-agent "${name}" asks (${formatElapsed(elapsed)}):\n\n${payload.question}${replyHint}`,
+      customType: "subagent_message",
+      content: `Sub-agent "${name}" messaged you (${formatElapsed(elapsed)}):\n\n${payload.message}${replyHint}`,
       display: true,
       details: {
         name,
         agent: running.agent,
-        question: payload.question,
+        message: payload.message,
         ...(sessionId ? { sessionId } : {}),
       },
     },
@@ -834,7 +834,7 @@ async function watchSubagent(
       sessionFile,
       onTick() {
         running.liveness.observe(Date.now());
-        deliverPendingQuestion(running);
+        deliverPendingMessage(running);
       },
     });
 
@@ -1481,8 +1481,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     };
   });
 
-  // ── subagent_question message renderer ──
-  pi.registerMessageRenderer("subagent_question", (message, options, theme) => {
+  // ── subagent_message renderer ──
+  pi.registerMessageRenderer("subagent_message", (message, options, theme) => {
     const details = message.details as any;
     if (!details) return undefined;
 
@@ -1493,20 +1493,20 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const agentTag = details.agent ? theme.fg("dim", ` (${details.agent})`) : "";
         const bgFn = (text: string) => theme.bg("toolSuccessBg", text);
 
-        const icon = theme.fg("accent", "?");
-        const header = `${icon} ${theme.fg("toolTitle", theme.bold(name))}${agentTag} ${theme.fg("dim", "— asks a question")}`;
+        const icon = theme.fg("accent", "↑");
+        const header = `${icon} ${theme.fg("toolTitle", theme.bold(name))}${agentTag} ${theme.fg("dim", "— waiting on your reply")}`;
 
         const contentLines = [header];
 
         if (options.expanded) {
           contentLines.push("");
-          contentLines.push(details.question ?? "");
+          contentLines.push(details.message ?? "");
           contentLines.push("");
           contentLines.push(
             theme.fg("dim", `Reply: send_message({ to: "${name}", message: "…" })`),
           );
         } else {
-          const preview = (details.question ?? "").split("\n")[0].slice(0, width - 10);
+          const preview = (details.message ?? "").split("\n")[0].slice(0, width - 10);
           contentLines.push(theme.fg("dim", preview));
           contentLines.push(theme.fg("muted", keyHint("app.tools.expand", "to expand")));
         }

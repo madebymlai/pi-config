@@ -8,9 +8,9 @@
  * automatically when their agent loop ends (see the `agent_end` handler);
  * interactive agents end when the human exits the pane.
  *
- * Messaging the parent keeps the session OPEN: it writes a `${sessionFile}.ask`
+ * Messaging the parent keeps the session OPEN: it writes a `${sessionFile}.message`
  * signal the parent's watcher picks up, parks the session in a "waiting" state
- * (auto-exit is suppressed for that turn via `awaitingAnswer`), and the parent
+ * (auto-exit is suppressed for that turn via `awaitingReply`), and the parent
  * replies with send_message — which lands as the subagent's next turn.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -183,7 +183,7 @@ export default function (pi: ExtensionAPI) {
   // open while it waits for the orchestrator's reply. Cleared when the reply
   // lands — on `input` (covers a reply steered into the current run) and on
   // `agent_start` (covers a reply that starts a fresh turn after parking).
-  let awaitingAnswer = false;
+  let awaitingReply = false;
 
   // Show widget + status bar on session start
   pi.on("session_start", (_event, ctx) => {
@@ -198,14 +198,14 @@ export default function (pi: ExtensionAPI) {
   pi.on("input", () => {
     recorder.input();
     // A submitted message is the orchestrator's (or a human's) reply — the
-    // pending question has been answered, however it was delivered. Clear
+    // pending message has been answered, however it was delivered. Clear
     // here, not only on agent_start, because a reply steered in *mid-run* is
     // absorbed into the current run (pi's `steer` behavior injects it before
     // the next LLM call): no new agent_start fires, so without this the flag
     // would stay set and agent_end would park the session as `waiting` even
     // though the answer already arrived and was consumed. (The `input` event
     // fires for mid-run steers because prompt() emits it before queueing.)
-    awaitingAnswer = false;
+    awaitingReply = false;
     // Ignore the initial task message that starts an autonomous subagent.
     // Only inputs after the first agent run has started count as user takeover.
     if (!shouldMarkUserTookOver(agentStarted)) return;
@@ -218,16 +218,16 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_start", () => {
     agentStarted = true;
-    // A new turn is starting — any pending question has now been answered
+    // A new turn is starting — any pending message has now been replied to
     // (or superseded), so let auto-exit resume normally when this turn ends.
-    awaitingAnswer = false;
+    awaitingReply = false;
     recorder.agentStart();
   });
 
   pi.on("agent_end", (event, ctx) => {
     const messages = (event as any).messages as any[] | undefined;
     // Never shut down while this session still has work in flight:
-    //  - awaitingAnswer: a question is pending the orchestrator's reply.
+    //  - awaitingReply: a message is pending the orchestrator's reply.
     //  - runningChildrenCount(): this subagent spawned its own children and is
     //    waiting for their results (delivered as steered turns). Exiting now
     //    would strand those children and drop their results.
@@ -235,7 +235,7 @@ export default function (pi: ExtensionAPI) {
     // turn lands.
     const hasPendingChildren = runningChildrenCount() > 0;
     const shouldExit =
-      !awaitingAnswer &&
+      !awaitingReply &&
       !hasPendingChildren &&
       autoExit &&
       shouldAutoExitOnAgentEnd(userTookOver, messages);
@@ -347,20 +347,20 @@ export default function (pi: ExtensionAPI) {
         if (!sessionFile) return null;
 
         // Keep the session open: suppress auto-exit for this turn and park in
-        // the "waiting" phase. The parent's watcher picks up the `.ask` signal
+        // the "waiting" phase. The parent's watcher picks up the `.message` signal
         // and notifies the orchestrator, who replies with send_message.
-        awaitingAnswer = true;
-        recorder.askQuestion();
+        awaitingReply = true;
+        recorder.awaitReply();
         writeFileSync(
-          `${sessionFile}.ask`,
+          `${sessionFile}.message`,
           JSON.stringify({
             name: process.env.PI_SUBAGENT_NAME ?? "subagent",
             agent: process.env.PI_SUBAGENT_AGENT ?? "",
-            question: message,
+            message,
           }),
         );
 
-        return { status: "asked" };
+        return { status: "sent-to-parent" };
       },
     },
   ]);

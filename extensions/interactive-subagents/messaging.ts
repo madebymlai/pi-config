@@ -1,11 +1,11 @@
 /**
  * send_message — one tool for talking to any agent in this lineage.
  *
- * Replaces the old split between `subagent_message` (downward, by name) and
- * `ask_question` (upward, implicit). Neither could be documented without the
- * other — `ask_question` had to tell the reader that replies arrive "via
- * subagent_message" — and a spawning worker held both at once, picking between
- * them purely on direction of travel.
+ * Replaces a since-removed pair of tools that split the job by direction of
+ * travel: one addressed a subagent by name going down, the other addressed the
+ * orchestrator implicitly going up. Neither could be documented without the
+ * other, and a spawning worker held both at once, choosing between them purely
+ * on which way the message was headed.
  *
  * Recipients are display names, the same ones the widget shows. `parent` is a
  * reserved name in that namespace, so addressing upward is the same act as
@@ -49,7 +49,7 @@ type MaybePromise<T> = T | Promise<T>;
 export type Delivery =
   | { status: "steered"; name: string }
   | { status: "resumed"; name: string; sessionId: string }
-  | { status: "asked" }
+  | { status: "sent-to-parent" }
   | { status: "no-parent" }
   | { status: "unknown-target"; known: string[] }
   | { status: "empty-message" }
@@ -177,11 +177,11 @@ function describe(delivery: Delivery): Presentation {
           `Session "${delivery.name}" resumed. This is fire-and-forget: when it finishes, its ` +
           `result is delivered to you automatically. Do not poll, sleep, or read session files.`,
       };
-    case "asked":
+    case "sent-to-parent":
       return {
         tone: "accent",
-        glyph: "?",
-        summary: "orchestrator — question sent",
+        glyph: "↑",
+        summary: "orchestrator — message sent",
         text:
           "Message sent to the orchestrator. Stop here and wait — do not continue working or " +
           "assume an answer. Their reply will arrive as your next message.",
