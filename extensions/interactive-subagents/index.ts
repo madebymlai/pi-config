@@ -133,9 +133,10 @@ const SubagentParams = Type.Object({
   }),
   task: Type.String({
     description:
-      "What the sub-agent must accomplish. It starts with no memory of this conversation and " +
-      "cannot ask you for background without stopping to wait, so state the goal, the files or " +
-      "areas involved, and what finished looks like.",
+      "What the sub-agent must accomplish. It starts with none of this conversation unless its " +
+      "agent is set to inherit it, so give the goal, the files or areas involved, and what " +
+      "finished looks like. It can message you for anything missing, which pauses it until you " +
+      "reply.",
   }),
   name: Type.Optional(
     Type.String({
