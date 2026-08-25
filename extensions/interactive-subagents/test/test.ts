@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import * as subagentsModule from "../index.ts";
 import { listAgents, resolveAgentLaunch, RESUME_LAUNCH } from "../agents.ts";
+import { computeToolAllowlist, getToolExtensionPath } from "../sandbox.ts";
 import {
   createTestDir,
   restoreEnvVar,
@@ -948,7 +949,7 @@ describe("subagent discovery", () => {
     assert.ok(worker, "expected bundled worker to be discoverable");
     assert.deepEqual(worker.subagentAgents, ["scout", "researcher"]);
 
-    const allowlist = testApi.buildSubagentToolAllowlist(worker.tools, { grantSpawning: true });
+    const allowlist = computeToolAllowlist(worker.tools, { grantSpawning: true });
     assert.ok(allowlist, "expected an allowlist");
     const tools = new Set(allowlist!.split(","));
     for (const t of ["subagent", "subagents_list"]) {
@@ -964,12 +965,12 @@ describe("subagent discovery", () => {
     for (const name of ["scout", "worker"]) {
       const defs = resolveAgentLaunch(name).defs;
       assert.ok(defs, `expected bundled agent ${name} to be discoverable`);
-      const allowlist = testApi.buildSubagentToolAllowlist(defs!.tools, { grantSpawning: false });
+      const allowlist = computeToolAllowlist(defs!.tools, { grantSpawning: false });
       assert.ok(allowlist, `expected ${name} to restrict tools`);
       for (const tool of allowlist!.split(",")) {
         if (["read", "write", "edit", "bash", "grep", "find", "ls", "send_message"].includes(tool)) continue;
         assert.ok(
-          testApi.getToolExtensionPath(tool),
+          getToolExtensionPath(tool),
           `${name} grants ${tool} but nothing maps it to an extension`,
         );
       }
@@ -985,18 +986,18 @@ describe("subagent discovery", () => {
   });
 
   it("getToolExtensionPath maps custom tools and skips built-ins", () => {
-    assert.equal(testApi.getToolExtensionPath("read"), undefined);
-    assert.equal(testApi.getToolExtensionPath("bash"), undefined);
-    assert.ok(testApi.getToolExtensionPath("web_search")?.endsWith("web-search/index.ts"));
-    assert.ok(testApi.getToolExtensionPath("safe_bash")?.endsWith("tools/safe-bash.ts"));
+    assert.equal(getToolExtensionPath("read"), undefined);
+    assert.equal(getToolExtensionPath("bash"), undefined);
+    assert.ok(getToolExtensionPath("web_search")?.endsWith("web-search/index.ts"));
+    assert.ok(getToolExtensionPath("safe_bash")?.endsWith("tools/safe-bash.ts"));
     // Spawning tools are registered by this extension itself.
-    assert.ok(testApi.getToolExtensionPath("subagent")?.endsWith("index.ts"));
+    assert.ok(getToolExtensionPath("subagent")?.endsWith("index.ts"));
     // The knowledge-graph tools all come from one flat file in the agent dir.
-    assert.ok(testApi.getToolExtensionPath("search_graph")?.endsWith("cbmem.ts"));
-    assert.ok(testApi.getToolExtensionPath("trace_path")?.endsWith("cbmem.ts"));
+    assert.ok(getToolExtensionPath("search_graph")?.endsWith("cbmem.ts"));
+    assert.ok(getToolExtensionPath("trace_path")?.endsWith("cbmem.ts"));
     // send_message is not: subagent-done.ts already loads into every subagent,
     // so mapping it here would pull the whole orchestration extension into a leaf.
-    assert.equal(testApi.getToolExtensionPath("send_message"), undefined);
+    assert.equal(getToolExtensionPath("send_message"), undefined);
   });
 
   it("ignores invalid session-mode values", async () => {
@@ -1015,99 +1016,6 @@ describe("subagent discovery", () => {
       assert.ok(loaded, "expected agent to load");
       assert.equal(loaded.sessionMode, undefined);
     });
-  });
-
-  it("buildSubagentToolAllowlist preserves requested tools and adds child control tools", () => {
-    assert.equal(
-      testApi.buildSubagentToolAllowlist("read,bash,web_search"),
-      "read,bash,web_search,send_message",
-    );
-  });
-
-  it("buildSubagentToolAllowlist returns null without an explicit tool restriction", () => {
-    assert.equal(testApi.buildSubagentToolAllowlist(undefined), null);
-    assert.equal(testApi.buildSubagentToolAllowlist(""), null);
-  });
-
-  it("applySandboxToParts replays model, identity, and default-deny tool restriction", () => {
-    withTempDir((d) => {
-      const parts: string[] = [];
-      testApi.applySandboxToParts(
-        parts,
-        {
-          agent: "worker",
-          toolAllowlist: "read,write,safe_bash",
-          model: "openrouter/z-ai/glm-5.2",
-          thinking: "medium",
-          systemPromptMode: "append",
-          identity: "You are a worker.",
-          spawnable: ["scout"],
-          autoExit: true,
-          cwd: null,
-          agentDir: null,
-        },
-        { artifactDir: d, name: "worker" },
-      );
-      const joined = parts.join(" ");
-      // Model with thinking suffix.
-      assert.ok(joined.includes("--model"), "expected --model");
-      assert.ok(joined.includes("openrouter/z-ai/glm-5.2:medium"), "expected model:thinking");
-      // Identity written to a file and appended.
-      assert.ok(joined.includes("--append-system-prompt"), "expected --append-system-prompt");
-      // Default-deny restriction.
-      assert.ok(parts.includes("--no-extensions"), "expected --no-extensions");
-      const toolsIdx = parts.indexOf("--tools");
-      assert.ok(toolsIdx >= 0, "expected --tools");
-      // The value is shell-escaped (single-quoted) before joining.
-      assert.ok(
-        parts[toolsIdx + 1].includes("read,write,safe_bash"),
-        "expected the tool allowlist as the --tools value",
-      );
-    });
-  });
-
-  it("applySandboxToParts omits restriction flags when the loadout was unrestricted", () => {
-    withTempDir((d) => {
-      const parts: string[] = [];
-      testApi.applySandboxToParts(
-        parts,
-        {
-          agent: null,
-          toolAllowlist: null,
-          model: null,
-          thinking: null,
-          systemPromptMode: null,
-          identity: null,
-          spawnable: null,
-          autoExit: false,
-          cwd: null,
-          agentDir: null,
-        },
-        { artifactDir: d, name: "fork" },
-      );
-      assert.deepEqual(parts, []);
-    });
-  });
-
-  it("buildPiPromptArgs inserts separator for artifact-backed launches with skills", () => {
-    assert.deepEqual(
-      testApi.buildPiPromptArgs({ effectiveSkills: "review,lint", taskDelivery: "artifact", taskArg: "@artifact.md" }),
-      ["", "/skill:review", "/skill:lint", "@artifact.md"],
-    );
-  });
-
-  it("buildPiPromptArgs omits separator for artifact-backed launches without skills", () => {
-    assert.deepEqual(
-      testApi.buildPiPromptArgs({ effectiveSkills: undefined, taskDelivery: "artifact", taskArg: "@artifact.md" }),
-      ["@artifact.md"],
-    );
-  });
-
-  it("buildPiPromptArgs omits separator for direct launches with skills", () => {
-    assert.deepEqual(
-      testApi.buildPiPromptArgs({ effectiveSkills: "review", taskDelivery: "direct", taskArg: "do the task" }),
-      ["/skill:review", "do the task"],
-    );
   });
 
   it("lists visible agents from discovery", async () => {
