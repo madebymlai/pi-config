@@ -2522,93 +2522,6 @@ describe("subagent startup delay", () => {
     }
   });
 });
-describe("subagents widget rendering", () => {
-  it("keeps every rendered line within a very narrow width", () => {
-    const testApi = (subagentsModule as any).__test__;
-    assert.ok(testApi, "expected subagents test helpers to be exported");
-    assert.equal(typeof testApi.renderSubagentWidgetLines, "function");
-
-    const originalNow = Date.now;
-    Date.now = () => 1_000_000;
-    try {
-      const lines = testApi.renderSubagentWidgetLines([
-        {
-          id: "a1",
-          name: "A",
-          task: "",
-          surface: "s1",
-          startTime: 1_000_000 - 13_000,
-          sessionFile: "sess1",
-          liveness: createLiveness({ id: "w1", name: "w1", activityFile: "/nonexistent/activity.json", startTimeMs: 1_000_000 - 13_000, interactive: false }),
-        },
-        {
-          id: "a2",
-          name: "B",
-          task: "",
-          surface: "s2",
-          startTime: 1_000_000 - 21_000,
-          sessionFile: "sess2",
-          liveness: createLiveness({ id: "w2", name: "w2", activityFile: "/nonexistent/activity.json", startTimeMs: 1_000_000 - 21_000, interactive: false }),
-        },
-        {
-          id: "a3",
-          name: "C",
-          task: "",
-          surface: "s3",
-          startTime: 1_000_000 - 27_000,
-          sessionFile: "sess3",
-          liveness: createLiveness({ id: "w3", name: "w3", activityFile: "/nonexistent/activity.json", startTimeMs: 1_000_000 - 27_000, interactive: false }),
-        },
-      ], 16);
-
-      assert.deepEqual(
-        lines.map((line: string) => visibleWidth(line)),
-        [16, 16, 16, 16, 16],
-      );
-    } finally {
-      Date.now = originalNow;
-    }
-  });
-
-  it("truncates the right-hand status instead of overflowing when it alone is too wide", () => {
-    const testApi = (subagentsModule as any).__test__;
-    assert.ok(testApi, "expected subagents test helpers to be exported");
-    assert.equal(typeof testApi.borderLine, "function");
-
-    const line = testApi.borderLine(" A ", " 999 msgs (999.9KB) ", 16);
-    assert.equal(visibleWidth(line), 16);
-  });
-
-  it("handles ultra-narrow widths without exceeding the width contract", () => {
-    const testApi = (subagentsModule as any).__test__;
-    assert.ok(testApi, "expected subagents test helpers to be exported");
-    assert.equal(typeof testApi.renderSubagentWidgetLines, "function");
-
-    const widths = [0, 1, 2];
-    for (const width of widths) {
-      const startTime = Date.now() - 5_000;
-      const lines = testApi.renderSubagentWidgetLines([
-        {
-          id: "a1",
-          name: "A",
-          task: "",
-          surface: "s1",
-          startTime,
-          sessionFile: "sess1",
-          liveness: createLiveness({ id: "w4", name: "w4", activityFile: "/nonexistent/activity.json", startTimeMs: startTime, interactive: false }),
-        },
-      ], width);
-
-      for (const line of lines) {
-        assert.ok(
-          visibleWidth(line) <= width,
-          `expected line width <= ${width}, got ${visibleWidth(line)} for ${JSON.stringify(line)}`,
-        );
-      }
-    }
-  });
-});
-
 describe("subagent display helpers", () => {
   const testApi = (subagentsModule as any).__test__;
 
@@ -2672,16 +2585,6 @@ describe("subagent display helpers", () => {
     });
   });
 
-  describe("widgetIcon", () => {
-    it("maps active/running to a glyph and waiting/starting to another", () => {
-      const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
-      assert.equal(strip(testApi.widgetIcon("active")), "⟳");
-      assert.equal(strip(testApi.widgetIcon("running")), "⟳");
-      assert.equal(strip(testApi.widgetIcon("stalled")), "⟳");
-      assert.equal(strip(testApi.widgetIcon("waiting")), "○");
-      assert.equal(strip(testApi.widgetIcon("starting")), "○");
-    });
-  });
 });
 
 describe("tmux.ts", () => {

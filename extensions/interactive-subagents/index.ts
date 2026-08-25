@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { Box, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Box, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -13,6 +13,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
+import { renderSubagentWidget } from "./widget.ts";
 import {
   isMuxAvailable,
   muxSetupHint,
@@ -42,7 +43,6 @@ import {
 // Only the aggregate formatting and config are still index.ts's business;
 // everything about an individual subagent's status now sits behind liveness.ts.
 import {
-  type StatusSnapshot,
   capStatusLines,
   formatStatusAggregate,
   loadStatusConfig,
@@ -468,27 +468,6 @@ function formatUsageSegments(stats: SessionStats): string[] {
   return segs;
 }
 
-/** ANSI colors for widget status icons (raw, since the widget bypasses theme). */
-const ICON_GREEN = "\x1b[38;2;126;186;103m";
-const ICON_YELLOW = "\x1b[38;2;214;181;94m";
-const ICON_RED = "\x1b[38;2;224;108;117m";
-const ICON_DIM = "\x1b[38;2;128;128;128m";
-
-/** Map a live status kind to a colored single-char icon for the widget. */
-function widgetIcon(kind: StatusSnapshot["kind"]): string {
-  switch (kind) {
-    case "active":
-    case "running":
-      return `${ICON_YELLOW}⟳${RST}`;
-    case "stalled":
-      return `${ICON_RED}⟳${RST}`;
-    case "waiting":
-    case "starting":
-    default:
-      return `${ICON_DIM}○${RST}`;
-  }
-}
-
 /**
  * Wait long enough for a freshly created pane to finish shell startup.
  *
@@ -558,25 +537,6 @@ function parentArtifactDirOf(ctx: MessagingContext) {
 }
 
 const statusConfig = loadStatusConfig();
-
-function formatWidgetRightLabel(snapshot: StatusSnapshot): string {
-  if (snapshot.kind === "starting") return " starting… ";
-  if (snapshot.kind === "running") return ` running ${snapshot.elapsedText} `;
-  if (snapshot.kind === "active") {
-    const label = snapshot.activityLabel ?? snapshot.activeScope;
-    const duration = snapshot.activeDurationText ? ` ${snapshot.activeDurationText}` : "";
-    return label ? ` active · ${label}${duration} ` : " active ";
-  }
-  if (snapshot.kind === "waiting") {
-    const duration = snapshot.waitingDurationText ? ` ${snapshot.waitingDurationText}` : "";
-    const detail = snapshot.statusLabel ? ` · ${snapshot.statusLabel}` : "";
-    return ` waiting${duration}${detail} `;
-  }
-
-  const detail = snapshot.statusLabel ? ` · ${snapshot.statusLabel}` : "";
-  const duration = snapshot.snapshotProblemText ? ` ${snapshot.snapshotProblemText}` : "";
-  return ` stalled${detail}${duration} `;
-}
 
 function resolveResultPresentation(
   result: Pick<
@@ -671,95 +631,6 @@ let widgetInterval: ReturnType<typeof setInterval> | null = null;
 /** Interval timer for status transition checks. */
 let statusInterval: ReturnType<typeof setInterval> | null = null;
 
-function formatElapsedMMSS(startTime: number): string {
-  const seconds = Math.floor((Date.now() - startTime) / 1000);
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
-const ACCENT = "\x1b[38;2;77;163;255m";
-const RST = "\x1b[0m";
-
-/**
- * Build a bordered content line: │left          right│
- * Left content is truncated if needed, right is preserved, padded to fill width.
- */
-function borderLine(left: string, right: string, width: number): string {
-  if (width <= 0) return "";
-  if (width === 1) return `${ACCENT}│${RST}`;
-
-  // width = total visible chars for the whole line including │ and │
-  const contentWidth = Math.max(0, width - 2); // space inside the two │ chars
-  const rightVis = visibleWidth(right);
-
-  // If the status chunk alone is too wide, prefer preserving it in compact form
-  // rather than overflowing the terminal.
-  if (rightVis >= contentWidth) {
-    const truncRight = truncateToWidth(right, contentWidth);
-    const rightPad = Math.max(0, contentWidth - visibleWidth(truncRight));
-    return `${ACCENT}│${RST}${truncRight}${" ".repeat(rightPad)}${ACCENT}│${RST}`;
-  }
-
-  const maxLeft = Math.max(0, contentWidth - rightVis);
-  const truncLeft = truncateToWidth(left, maxLeft);
-  const leftVis = visibleWidth(truncLeft);
-  const pad = Math.max(0, contentWidth - leftVis - rightVis);
-  return `${ACCENT}│${RST}${truncLeft}${" ".repeat(pad)}${right}${ACCENT}│${RST}`;
-}
-
-/**
- * Build the bordered top line: ╭─ Title ──── info ─╮
- * All chars are accounted for within `width`.
- */
-function borderTop(title: string, info: string, width: number): string {
-  if (width <= 0) return "";
-  if (width === 1) return `${ACCENT}╭${RST}`;
-
-  // ╭─ Title ───...─── info ─╮
-  // overhead: ╭─ (2) + space around title (2) + space around info (2) + ─╮ (2) = but we simplify
-  const inner = Math.max(0, width - 2); // inside ╭ and ╮
-  const titlePart = `─ ${title} `;
-  const infoPart = ` ${info} ─`;
-  const fillLen = Math.max(0, inner - titlePart.length - infoPart.length);
-  const fill = "─".repeat(fillLen);
-  const content = `${titlePart}${fill}${infoPart}`.slice(0, inner).padEnd(inner, "─");
-  return `${ACCENT}╭${content}╮${RST}`;
-}
-
-/**
- * Build the bordered bottom line: ╰──────────────────╯
- */
-function borderBottom(width: number): string {
-  if (width <= 0) return "";
-  if (width === 1) return `${ACCENT}╰${RST}`;
-
-  const inner = Math.max(0, width - 2);
-  return `${ACCENT}╰${"─".repeat(inner)}╯${RST}`;
-}
-
-function renderSubagentWidgetLines(agents: RunningSubagent[], width: number): string[] {
-  const count = agents.length;
-  const title = "Subagents";
-  const info = `${count} running`;
-
-  const lines: string[] = [borderTop(title, info, width)];
-
-  for (const agent of agents) {
-    const elapsed = formatElapsedMMSS(agent.startTime);
-    const agentTag = agent.agent ? ` (${agent.agent})` : "";
-    const snapshot = agent.liveness.snapshot(Date.now());
-    const icon = widgetIcon(snapshot.kind);
-    const left = ` ${icon} ${elapsed}  ${agent.name}${agentTag} `;
-    const right = statusConfig.enabled ? formatWidgetRightLabel(snapshot) : " starting… ";
-
-    lines.push(borderLine(left, right, width));
-  }
-
-  lines.push(borderBottom(width));
-  return lines;
-}
-
 function updateWidget() {
   if (!latestCtx?.hasUI) return;
 
@@ -779,7 +650,14 @@ function updateWidget() {
       return {
         invalidate() {},
         render(width: number) {
-          return renderSubagentWidgetLines(Array.from(runningSubagents.values()), width);
+          const now = Date.now();
+          const rows = Array.from(runningSubagents.values()).map((running) => ({
+            name: running.name,
+            agent: running.agent,
+            elapsedMs: now - running.startTime,
+            snapshot: running.liveness.snapshot(now),
+          }));
+          return renderSubagentWidget(rows, width, { showStatus: statusConfig.enabled });
         },
       };
     },
@@ -1029,9 +907,7 @@ function resolveResumeLaunchBehavior(): { autoExit: boolean; interactive: boolea
 }
 
 export const __test__ = {
-  borderLine,
   getShellReadyDelayMs,
-  renderSubagentWidgetLines,
   loadAgentDefaults,
   discoverAgentDefinitions,
   resolveEffectiveSessionMode,
@@ -1040,7 +916,6 @@ export const __test__ = {
   buildSubagentToolAllowlist,
   applySandboxToParts,
   buildPiPromptArgs,
-  formatWidgetRightLabel,
   getToolExtensionPath,
   uniqueRunningName,
   reservedNames,
@@ -1054,7 +929,6 @@ export const __test__ = {
   formatContextUsage,
   contextWindowFor,
   formatUsageSegments,
-  widgetIcon,
 };
 
 function startWidgetRefresh() {
