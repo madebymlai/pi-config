@@ -9,8 +9,6 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024;
 const MAX_PDF_SIZE = 20 * 1024 * 1024;
 const MIN_USEFUL_CONTENT = 500;
-const JINA_READER_BASE = "https://r.jina.ai/";
-const JINA_TIMEOUT_MS = 30000;
 
 /**
  * Upper bound on what reaches the model. The HTTP limits above bound the
@@ -116,208 +114,6 @@ async function extractPDF(
 	return { url, title, content: lines.join("\n"), error: null };
 }
 
-// ── RSC Content Extraction (Next.js) ─────────────────────────────────
-
-function extractRSCContent(
-	html: string,
-): { title: string; content: string } | null {
-	if (!html.includes("self.__next_f.push")) return null;
-
-	const chunkMap = new Map<string, string>();
-	const scriptRegex =
-		/<script>self\.__next_f\.push\(\[1,"([\s\S]*?)"\]\)<\/script>/g;
-
-	for (const match of html.matchAll(scriptRegex)) {
-		let content: string;
-		try {
-			content = JSON.parse('"' + match[1] + '"');
-		} catch {
-			continue;
-		}
-		for (const line of content.split("\n")) {
-			if (!line.trim()) continue;
-			const colonIdx = line.indexOf(":");
-			if (colonIdx <= 0 || colonIdx > 4) continue;
-			const id = line.slice(0, colonIdx);
-			if (!/^[0-9a-f]+$/i.test(id)) continue;
-			const payload = line.slice(colonIdx + 1);
-			if (!payload) continue;
-			const existing = chunkMap.get(id);
-			if (!existing || payload.length > existing.length) {
-				chunkMap.set(id, payload);
-			}
-		}
-	}
-
-	if (chunkMap.size === 0) return null;
-
-	const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/);
-	const title = titleMatch?.[1]?.split("|")[0]?.trim() || "";
-
-	const parsedCache = new Map<string, unknown>();
-	function getParsedChunk(id: string): unknown | null {
-		if (parsedCache.has(id)) return parsedCache.get(id);
-		const chunk = chunkMap.get(id);
-		if (!chunk || !chunk.startsWith("[")) {
-			parsedCache.set(id, null);
-			return null;
-		}
-		try {
-			const parsed = JSON.parse(chunk);
-			parsedCache.set(id, parsed);
-			return parsed;
-		} catch {
-			parsedCache.set(id, null);
-			return null;
-		}
-	}
-
-	type Node = unknown;
-	const visitedRefs = new Set<string>();
-
-	function extractNode(node: Node, ctx = { inCode: false }): string {
-		if (node === null || node === undefined) return "";
-		if (typeof node === "string") {
-			const refMatch = node.match(/^\$L([0-9a-f]+)$/i);
-			if (refMatch) {
-				const refId = refMatch[1];
-				if (visitedRefs.has(refId)) return "";
-				visitedRefs.add(refId);
-				const refNode = getParsedChunk(refId);
-				const result = refNode ? extractNode(refNode, ctx) : "";
-				visitedRefs.delete(refId);
-				return result;
-			}
-			if (
-				!ctx.inCode &&
-				(node === "$undefined" ||
-					node === "$" ||
-					/^\$[A-Z]/.test(node))
-			)
-				return "";
-			return node.trim() ? node : "";
-		}
-		if (typeof node === "number") return String(node);
-		if (typeof node === "boolean") return "";
-		if (!Array.isArray(node)) return "";
-
-		if (node[0] === "$" && typeof node[1] === "string") {
-			const tag = node[1] as string;
-			const props = (node[3] || {}) as Record<string, unknown>;
-			const skipTags = [
-				"script", "style", "svg", "path", "circle", "link", "meta",
-				"template", "button", "input", "nav", "footer", "aside",
-			];
-			if (skipTags.includes(tag)) return "";
-
-			if (tag.startsWith("$L")) {
-				const refId = tag.slice(2);
-				if (visitedRefs.has(refId)) return "";
-				if (props.baseId && props.children)
-					return `## ${String(props.children)}\n\n`;
-				visitedRefs.add(refId);
-				const refNode = getParsedChunk(refId);
-				let result = "";
-				if (refNode) result = extractNode(refNode, ctx);
-				else if (props.children)
-					result = extractNode(props.children as Node, ctx);
-				visitedRefs.delete(refId);
-				return result;
-			}
-
-			const children = props.children;
-			const content = children
-				? extractNode(children as Node, ctx)
-				: "";
-
-			switch (tag) {
-				case "h1": return `# ${content.trim()}\n\n`;
-				case "h2": return `## ${content.trim()}\n\n`;
-				case "h3": return `### ${content.trim()}\n\n`;
-				case "h4": return `#### ${content.trim()}\n\n`;
-				case "h5": return `##### ${content.trim()}\n\n`;
-				case "h6": return `###### ${content.trim()}\n\n`;
-				case "p": return `${content.trim()}\n\n`;
-				case "code": {
-					const cc = children
-						? extractNode(children as Node, { inCode: true })
-						: "";
-					return ctx.inCode ? cc : `\`${cc}\``;
-				}
-				case "pre": {
-					const pc = children
-						? extractNode(children as Node, { inCode: true })
-						: "";
-					return "```\n" + pc + "\n```\n\n";
-				}
-				case "strong": case "b": return `**${content}**`;
-				case "em": case "i": return `*${content}*`;
-				case "li": return `- ${content.trim()}\n`;
-				case "ul": case "ol": return content + "\n";
-				case "blockquote": return `> ${content.trim()}\n\n`;
-				case "a": {
-					const href = props.href as string | undefined;
-					return href && !href.startsWith("#")
-						? `[${content}](${href})`
-						: content;
-				}
-				default: return content;
-			}
-		}
-
-		return (node as Node[]).map((n) => extractNode(n, ctx)).join("");
-	}
-
-	const mainChunk = getParsedChunk("23");
-	if (mainChunk) {
-		const content = extractNode(mainChunk);
-		if (content.trim().length > 100) {
-			return {
-				title,
-				content: content.replace(/\n{3,}/g, "\n\n").trim(),
-			};
-		}
-	}
-
-	const contentParts: { order: number; text: string }[] = [];
-	for (const [id] of chunkMap) {
-		if (id === "23") continue;
-		const parsed = getParsedChunk(id);
-		if (!parsed) continue;
-		visitedRefs.clear();
-		const text = extractNode(parsed);
-		if (
-			text.trim().length > 50 &&
-			!text.includes("page was not found") &&
-			!text.includes("404")
-		) {
-			contentParts.push({
-				order: parseInt(id, 16),
-				text: text.trim(),
-			});
-		}
-	}
-
-	if (contentParts.length === 0) return null;
-	contentParts.sort((a, b) => a.order - b.order);
-
-	const seen = new Set<string>();
-	const uniqueParts: string[] = [];
-	for (const part of contentParts) {
-		const key = part.text.slice(0, 150);
-		if (!seen.has(key)) {
-			seen.add(key);
-			uniqueParts.push(part.text);
-		}
-	}
-
-	const content = uniqueParts
-		.join("\n\n")
-		.replace(/\n{3,}/g, "\n\n")
-		.trim();
-	return content.length > 100 ? { title, content } : null;
-}
-
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function isLikelyJSRendered(html: string): boolean {
@@ -340,51 +136,18 @@ function extractHeadingTitle(text: string): string | null {
 	return cleaned || null;
 }
 
-// ── Jina Reader Fallback ─────────────────────────────────────────────
-
-async function extractWithJinaReader(
-	url: string,
-	signal?: AbortSignal,
-): Promise<FetchResult | null> {
-	try {
-		const res = await fetch(JINA_READER_BASE + url, {
-			headers: { Accept: "text/markdown", "X-No-Cache": "true" },
-			signal: AbortSignal.any([
-				AbortSignal.timeout(JINA_TIMEOUT_MS),
-				...(signal ? [signal] : []),
-			]),
-		});
-		if (!res.ok) return null;
-
-		const content = await res.text();
-		const contentStart = content.indexOf("Markdown Content:");
-		if (contentStart < 0) return null;
-
-		const markdownPart = content.slice(contentStart + 17).trim();
-		if (
-			markdownPart.length < 100 ||
-			markdownPart.startsWith("Loading...") ||
-			markdownPart.startsWith("Please enable JavaScript")
-		) {
-			return null;
-		}
-
-		const title =
-			extractHeadingTitle(markdownPart) ??
-			new URL(url).pathname.split("/").pop() ??
-			url;
-		return { url, title, content: markdownPart, error: null };
-	} catch {
-		return null;
-	}
-}
-
 // ── Main HTTP Extraction ─────────────────────────────────────────────
 
-async function extractViaHttp(
+async function fetchAndExtract(
 	url: string,
 	signal?: AbortSignal,
 ): Promise<FetchResult> {
+	try {
+		new URL(url);
+	} catch {
+		return { url, title: "", content: "", error: "Invalid URL" };
+	}
+
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
 	const onAbort = () => controller.abort();
@@ -463,34 +226,15 @@ async function extractViaHttp(
 		const article = await Defuddle(text, url, { markdown: true });
 		const extracted = article?.content ?? "";
 
-		if (!extracted) {
-			const rscResult = extractRSCContent(text);
-			if (rscResult) {
-				return {
-					url,
-					title: rscResult.title,
-					content: rscResult.content,
-					error: null,
-				};
-			}
-
-			const jsRendered = isLikelyJSRendered(text);
-			return {
-				url, title: "", content: "",
-				error: jsRendered
-					? "Page appears to be JavaScript-rendered (content loads dynamically)"
-					: "Could not extract readable content from HTML structure",
-			};
-		}
-
 		if (extracted.length < MIN_USEFUL_CONTENT) {
+			const why = isLikelyJSRendered(text)
+				? "Page appears to be JavaScript-rendered (content loads dynamically)"
+				: "Could not extract readable content from this page";
 			return {
 				url,
 				title: article?.title || "",
 				content: extracted,
-				error: isLikelyJSRendered(text)
-					? "Page appears to be JavaScript-rendered (content loads dynamically)"
-					: "Extracted content appears incomplete",
+				error: `${why}\n\nTry a different URL for the same content, or web_search for an alternative source.`,
 			};
 		}
 
@@ -509,45 +253,6 @@ async function extractViaHttp(
 	}
 }
 
-// ── Public Fetch Function ────────────────────────────────────────────
-
-async function fetchAndExtract(
-	url: string,
-	signal?: AbortSignal,
-): Promise<FetchResult> {
-	if (signal?.aborted) {
-		return { url, title: "", content: "", error: "Aborted" };
-	}
-
-	try {
-		new URL(url);
-	} catch {
-		return { url, title: "", content: "", error: "Invalid URL" };
-	}
-
-	const httpResult = await extractViaHttp(url, signal);
-	if (signal?.aborted)
-		return { url, title: "", content: "", error: "Aborted" };
-	if (!httpResult.error) return httpResult;
-
-	if (
-		httpResult.error.startsWith("Unsupported content type") ||
-		httpResult.error.startsWith("Response too large")
-	) {
-		return httpResult;
-	}
-
-	const jinaResult = await extractWithJinaReader(url, signal);
-	if (jinaResult) return jinaResult;
-	if (signal?.aborted)
-		return { url, title: "", content: "", error: "Aborted" };
-
-	return {
-		...httpResult,
-		error: `${httpResult.error}\n\nThe page may be JavaScript-rendered. Try:\n  • A different URL for the same content\n  • web_search to find cached/alternative versions`,
-	};
-}
-
 // ── Extension Registration ───────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -555,7 +260,7 @@ export default function (pi: ExtensionAPI) {
 		name: "web_fetch",
 		label: "Web Fetch",
 		description:
-			"Fetch a web page and extract readable content as clean markdown. Handles PDFs, plain text, and falls back to Jina Reader for JS-rendered pages. Output is capped; a longer page reports the offset to continue from, so the rest can be read with follow-up calls.",
+			"Fetch a web page and extract readable content as clean markdown. Handles HTML, PDFs, and plain text. Output is capped; a longer page reports the offset to continue from, so the rest can be read with follow-up calls.",
 		promptSnippet:
 			"Fetch a URL and extract readable content as markdown. Supports HTML pages, PDFs, and plain text.",
 
