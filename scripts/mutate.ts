@@ -6,16 +6,24 @@
  * untested branch looks exactly like a tested one. So this flips operators one at
  * a time and reports every mutation the suite let through.
  *
- * Two kinds of survivor come out, and they want opposite fixes:
+ * Three kinds of survivor come out, and they want different answers:
  *
  *   - a real gap, where the mutation changes behaviour nobody asserts on. Write
  *     the missing test.
- *   - an equivalent mutant, where the mutation cannot change behaviour because
- *     the code it touched was redundant. Delete the code. Two dead branches in
+ *   - dead code, where the mutation cannot change behaviour because the branch
+ *     it touched was already unreachable. Delete it. Two dead branches in
  *     observe/liveness.ts were found exactly this way, by being unkillable.
+ *   - an equivalent mutant, where the mutation is a no-op on every value that
+ *     can actually occur. `?? -> ||` on something that is never an empty string
+ *     is the common case. Leave it, and say why.
  *
- * Deciding which is which is the judgement this tool cannot make for you, so it
- * reports rather than scores.
+ * That third kind is why this prints counts and not a percentage. The
+ * denominator contains mutants no test can ever kill, and how many depends on
+ * which operators a file happens to use: activity-recorder.ts is 47% `??` and
+ * liveness.ts is 26%, so their raw scores are not comparable even though both
+ * kill every killable mutant. A percentage here invites chasing the number by
+ * writing tests for inputs that cannot occur, which raises the score and lowers
+ * the value. Read the survivor list instead.
  *
  * Usage:
  *   bun scripts/mutate.ts <source.ts> <test.ts> [more-tests.ts...]
@@ -122,11 +130,13 @@ function main(): number {
     writeFileSync(sourceFile, original, "utf8");
   }
 
-  const score = mutants.length - broken > 0 ? Math.round((killed / (mutants.length - broken)) * 100) : 0;
-  console.log(`\n\nkilled ${killed}, survived ${survivors.length}, unrunnable ${broken}  (score ${score}%)\n`);
+  console.log(`\n\nkilled ${killed}, survived ${survivors.length}, unrunnable ${broken}\n`);
   for (const survivor of survivors) console.log(`  ${survivor}`);
   if (survivors.length > 0) {
-    console.log("\nEach survivor is either a missing test or dead code. Decide which.");
+    console.log(
+      "\nEach survivor is either a missing test, dead code, or a mutation that cannot" +
+        "\nchange behaviour at all. Decide which, one at a time.",
+    );
   }
   return 0;
 }
