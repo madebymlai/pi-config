@@ -33,15 +33,19 @@ const MAX_COUNT = 25;
  * so a typo would degrade results with no error. Failing loudly is the whole
  * point of this list.
  *
- * "research paper" and "github" are absent from Exa's published reference but
- * verified working — across unrelated queries, github returned only github.com
- * and research paper returned only journals and preprint hosts. Re-check them
- * if results ever stop looking category-shaped.
+ * The first six are Exa's published set. "github" is undocumented but real:
+ * against a baseline of wikipedia/science.org it returns only github.com, while
+ * an unrecognised category leaves that baseline untouched. Re-check it if
+ * results ever stop looking category-shaped.
+ *
+ * "research paper" is deliberately absent despite also working — it returns
+ * results identical to "publication", which the docs already define as covering
+ * research papers, preprints and journal articles. Two names for one filter is
+ * a worse interface than one.
  */
 const CATEGORIES = [
 	"company",
 	"publication",
-	"research paper",
 	"news",
 	"github",
 	"personal site",
@@ -201,7 +205,7 @@ export default function (pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Write the query as a description of the page you want ('blog post comparing X and Y performance'), not as keywords. This is a neural index, so Google operators such as quotes, minus signs, and site: do nothing.",
 			"Use one web_search tool call per search angle instead of batching multiple searches into one call.",
-			"Prefer the category filter over wording the query to imply a source type. It is a strong filter: the same query under 'github' returns only repositories, under 'research paper' only journals, under 'company' only vendor sites.",
+			"Prefer the category filter over wording the query to imply a source type. It is a strong filter: the same query under 'github' returns only repositories, under 'publication' only journals, under 'company' only vendor sites.",
 			"Results are not billed individually, but they do consume context. Raise count when a search needs breadth; lower it when only the top hit matters.",
 		],
 
@@ -226,7 +230,7 @@ export default function (pi: ExtensionAPI) {
 					CATEGORIES.map((c) => Type.Literal(c)),
 					{
 						description:
-							"Restrict to a kind of page: 'research paper' or 'publication' for papers and specs, 'github' for repositories and source, 'news' for reporting, 'company' for vendor pages.",
+							"Restrict to a kind of page: 'publication' for papers, preprints and journal articles, 'github' for repositories and source, 'news' for reporting, 'company' for vendor pages.",
 					},
 				),
 			),
