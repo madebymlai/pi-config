@@ -39,25 +39,15 @@ import {
   type SessionStats,
   type SubagentLoadout,
 } from "./session.ts";
+// Only the aggregate formatting and config are still index.ts's business;
+// everything about an individual subagent's status now sits behind liveness.ts.
 import {
   type StatusSnapshot,
-  type SubagentStatusState,
-  advanceStatusState,
   capStatusLines,
-  classifyStatus,
-  createStatusState,
-  forceStatusAfterInterrupt,
   formatStatusAggregate,
-  formatTransitionLine,
-  observeStatus,
   loadStatusConfig,
 } from "./status.ts";
-import {
-  getSubagentActivityFile,
-  readSubagentActivityFile,
-  type ActivityReadResult,
-  type SubagentActivityState,
-} from "./activity.ts";
+import { createLiveness, getSubagentActivityFile, type SubagentLiveness } from "./liveness.ts";
 import {
   PARENT,
   registerSendMessage,
@@ -686,23 +676,12 @@ interface RunningSubagent {
   surface: string;
   startTime: number;
   sessionFile: string;
-  launchScriptFile?: string;
-  activityFile?: string;
-  activity?: SubagentActivityState;
-  activityRead?: {
-    ok: boolean;
-    reason?: "missing" | "invalid" | "wrong-id";
-    error?: string;
-  };
-  abortController?: AbortController;
-  statusState: SubagentStatusState;
-  /**
-   * When true, status transitions (stalled/recovered) do not wake the parent
-   * session via a steer message. The widget still updates locally. Used for
-   * long-running agents where the user drives the conversation in the
-   * subagent's pane (e.g. planner).
-   */
-  interactive: boolean;
+  /** The generated shell script, kept so a launch can be inspected after the fact. */
+  launchScriptFile: string;
+  /** Aborts the watcher; the tool call's own signal is long gone by then. */
+  abortController: AbortController;
+  /** How it is doing. The activity file and the status state live behind this. */
+  liveness: SubagentLiveness;
 }
 
 /** All currently running subagents, keyed by id. */
@@ -807,7 +786,7 @@ function renderSubagentWidgetLines(agents: RunningSubagent[], width: number): st
   for (const agent of agents) {
     const elapsed = formatElapsedMMSS(agent.startTime);
     const agentTag = agent.agent ? ` (${agent.agent})` : "";
-    const snapshot = classifyStatus(agent.statusState, Date.now());
+    const snapshot = agent.liveness.snapshot(Date.now());
     const icon = widgetIcon(snapshot.kind);
     const left = ` ${icon} ${elapsed}  ${agent.name}${agentTag} `;
     const right = statusConfig.enabled ? formatWidgetRightLabel(snapshot) : " starting… ";
@@ -961,47 +940,6 @@ function buildPiPromptArgs(params: {
   ];
 }
 
-function activityLabel(activity: SubagentActivityState): string | undefined {
-  if (activity.phase !== "active") return undefined;
-  if (activity.activeScope === "tool") return activity.toolName ?? "tool";
-  if (activity.activeScope === "provider") return "provider";
-  if (activity.activeScope === "streaming") return "streaming";
-  return activity.activeScope;
-}
-
-function observeRunningSubagent(running: RunningSubagent, observedAt = Date.now()) {
-  const activityFile = running.activityFile;
-  const read: ActivityReadResult = activityFile
-    ? readSubagentActivityFile(activityFile, running.id)
-    : { ok: false, reason: "missing" };
-
-  running.activityRead = read.ok
-    ? { ok: true }
-    : { ok: false, reason: read.reason, error: read.error };
-
-  if (read.ok) {
-    running.activity = read.activity;
-    running.statusState = observeStatus(running.statusState, {
-      snapshot: "present",
-      updatedAt: read.activity.updatedAt,
-      sequence: read.activity.sequence,
-      phase: read.activity.phase,
-      active: read.activity.phase === "active",
-      activeScope: read.activity.activeScope,
-      activeSince: read.activity.activeSince,
-      waitingSince: read.activity.waitingSince,
-      latestEvent: read.activity.latestEvent,
-      activityLabel: activityLabel(read.activity),
-    }, observedAt);
-    return;
-  }
-
-  running.statusState = observeStatus(running.statusState, {
-    snapshot: read.reason,
-    snapshotError: read.error,
-  }, observedAt);
-}
-
 /**
  * Names claimed by spawns that are mid-launch but not yet registered in
  * `runningSubagents`. Parallel `subagent` tool calls run their synchronous
@@ -1067,12 +1005,12 @@ function steerRunning(
   send: (surface: string, command: string) => void = sendCommand,
 ): Delivery {
   const now = Date.now();
-  observeRunningSubagent(running, now);
+  running.liveness.observe(now);
 
   const steer = steerSubagent(running, message, send);
   if ("error" in steer) return { status: "transport-failed", reason: steer.error };
 
-  running.statusState = forceStatusAfterInterrupt(running.statusState, now);
+  running.liveness.interrupted(now);
   updateWidget();
 
   return { status: "steered", name: running.name };
@@ -1096,20 +1034,9 @@ function startStatusRefresh(pi: ExtensionAPI) {
     let shouldRefreshWidget = false;
 
     for (const running of runningSubagents.values()) {
-      observeRunningSubagent(running, now);
-      const { nextState, snapshot, transition } = advanceStatusState(running.statusState, now);
-      if (nextState.currentKind !== running.statusState.currentKind) {
-        shouldRefreshWidget = true;
-      }
-      running.statusState = nextState;
-
-      // Interactive subagents (long-running, user-driven) intentionally don't
-      // wake the parent session on stalled/recovered transitions — the user is
-      // working in the subagent's pane, and a steer message here would burn an
-      // orchestrator turn on a no-op "still waiting" ping. Widget still updates.
-      if (transition && !running.interactive) {
-        transitionLines.push(formatTransitionLine(running.name, snapshot, transition));
-      }
+      const { kindChanged, transition } = running.liveness.tick(now);
+      if (kindChanged) shouldRefreshWidget = true;
+      if (transition) transitionLines.push(transition);
     }
 
     if (shouldRefreshWidget) updateWidget();
@@ -1152,7 +1079,6 @@ export const __test__ = {
   applySandboxToParts,
   buildPiPromptArgs,
   formatWidgetRightLabel,
-  observeRunningSubagent,
   getToolExtensionPath,
   uniqueRunningName,
   reservedNames,
@@ -1468,6 +1394,10 @@ function runSubagent(pi: ExtensionAPI, run: SubagentRun): RunningSubagent {
     ].join("\n"),
   });
 
+  // A dedicated controller: the tool call's own signal completes when it
+  // returns, which is long before the subagent does.
+  const watcherAbort = new AbortController();
+
   const running: RunningSubagent = {
     id: run.id,
     name: run.name,
@@ -1477,20 +1407,20 @@ function runSubagent(pi: ExtensionAPI, run: SubagentRun): RunningSubagent {
     startTime: run.startTime,
     sessionFile: run.sessionFile,
     launchScriptFile,
-    activityFile: run.activityFile,
-    interactive: run.interactive,
-    statusState: createStatusState({ startTimeMs: run.startTime }),
+    abortController: watcherAbort,
+    liveness: createLiveness({
+      id: run.id,
+      name: run.name,
+      activityFile: run.activityFile,
+      startTimeMs: run.startTime,
+      interactive: run.interactive,
+    }),
   };
   runningSubagents.set(run.id, running);
 
   // The widget and the status supervisor are idle until something is running.
   startWidgetRefresh();
   startStatusRefresh(pi);
-
-  // A dedicated controller: the tool call's own signal completes when it
-  // returns, which is long before the subagent does.
-  const watcherAbort = new AbortController();
-  running.abortController = watcherAbort;
 
   watchSubagent(running, watcherAbort.signal, run.fromEntry)
     .then((result) => {
@@ -1548,7 +1478,7 @@ async function watchSubagent(
       interval: 1000,
       sessionFile,
       onTick() {
-        observeRunningSubagent(running);
+        running.liveness.observe(Date.now());
         deliverPendingQuestion(running);
       },
     });

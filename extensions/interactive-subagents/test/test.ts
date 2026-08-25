@@ -48,6 +48,7 @@ import {
   createSubagentActivityRecorder,
   getSubagentActivityFile,
   readSubagentActivityFile,
+  writeSubagentActivityFile,
 } from "../activity.ts";
 import {
   shouldMarkUserTookOver,
@@ -57,6 +58,7 @@ import {
 } from "../subagent-done.ts";
 import subagentDoneExtension from "../subagent-done.ts";
 import { registerSendMessage, __test__ as messagingTestApi } from "../messaging.ts";
+import { createLiveness } from "../liveness.ts";
 import { createMockExtensionApi } from "./support/mock-extension-api.ts";
 import { __pollForExitTest__ } from "../tmux.ts";
 
@@ -2106,16 +2108,55 @@ describe("subagent activity snapshots", () => {
 });
 
 describe("subagent interruption", () => {
-  function makeRunning(overrides: Record<string, unknown> = {}) {
+  /**
+   * A running subagent whose liveness is backed by a real activity file, so
+   * status is driven the way production drives it rather than by reaching past
+   * the interface. `activeAt` makes it mid-tool, which is what the steer tests
+   * need in order to observe the interrupt.
+   */
+  function makeRunning(overrides: Record<string, unknown> = {}, opts: { activeAt?: number } = {}) {
+    const id = (overrides.id as string) ?? "a1";
+    const name = (overrides.name as string) ?? "Worker";
+    const dir = createTestDir();
+    const activityFile = join(dir, `activity-${id}.json`);
+    const liveness = createLiveness({
+      id,
+      name,
+      activityFile,
+      startTimeMs: 0,
+      interactive: (overrides.interactive as boolean) ?? false,
+    });
+
+    if (opts.activeAt !== undefined) {
+      writeSubagentActivityFile(activityFile, {
+        version: 1,
+        runningChildId: id,
+        createdAt: 0,
+        updatedAt: opts.activeAt,
+        sequence: 1,
+        latestEvent: "tool_execution_start",
+        phase: "active",
+        activeScope: "tool",
+        activeSince: opts.activeAt,
+        toolName: "bash",
+        agentActive: true,
+        turnActive: true,
+        providerActive: false,
+        toolActive: true,
+      } as any);
+      liveness.observe(opts.activeAt);
+    }
+
     return {
-      id: "a1",
-      name: "Worker",
+      id,
+      name,
       task: "",
       surface: "pane-1",
       startTime: 0,
       sessionFile: "worker.jsonl",
-      interactive: false,
-      statusState: createStatusState({ startTimeMs: 0 }),
+      launchScriptFile: "",
+      abortController: new AbortController(),
+      liveness,
       ...overrides,
     };
   }
@@ -2389,23 +2430,8 @@ describe("subagent interruption", () => {
     let sentText = "";
     runningMap.clear();
 
-    const activeState = observeStatus(
-      createStatusState({ startTimeMs: 0 }),
-      {
-        snapshot: "present",
-        updatedAt: 5_000,
-        sequence: 1,
-        phase: "active",
-        active: true,
-        activeScope: "tool",
-        activeSince: 5_000,
-        activityLabel: "bash",
-      },
-      5_000,
-    );
-
     try {
-      runningMap.set("a1", makeRunning({ statusState: activeState }));
+      runningMap.set("a1", makeRunning({}, { activeAt: 5_000 }));
 
       const send = sendMessageWithFakeMux((surface: string, text: string) => {
         sentSurface = surface;
@@ -2417,7 +2443,7 @@ describe("subagent interruption", () => {
       assert.equal(sentText, "keep going");
       assert.equal(result.content[0].text.includes('Message delivered to running subagent "Worker"'), true);
       assert.deepEqual(result.details, { status: "steered", name: "Worker" });
-      const snapshot = classifyStatus(runningMap.get("a1").statusState, 20_000);
+      const snapshot = runningMap.get("a1").liveness.snapshot(20_000);
       assert.equal(snapshot.kind, "waiting");
       assert.equal(runningMap.has("a1"), true);
     } finally {
@@ -2449,23 +2475,8 @@ describe("subagent interruption", () => {
     const runningMap = testApi.runningSubagents as Map<string, any>;
     runningMap.clear();
 
-    const activeState = observeStatus(
-      createStatusState({ startTimeMs: 0 }),
-      {
-        snapshot: "present",
-        updatedAt: 5_000,
-        sequence: 1,
-        phase: "active",
-        active: true,
-        activeScope: "tool",
-        activeSince: 5_000,
-        activityLabel: "bash",
-      },
-      5_000,
-    );
-
     try {
-      runningMap.set("a1", makeRunning({ statusState: activeState }));
+      runningMap.set("a1", makeRunning({}, { activeAt: 5_000 }));
 
       const send = sendMessageWithFakeMux(() => {
         throw new Error("mux write failed");
@@ -2474,7 +2485,7 @@ describe("subagent interruption", () => {
 
       assert.equal(result.details.status, "transport-failed");
       assert.match(result.content[0].text, /Failed to deliver message/);
-      assert.equal(classifyStatus(runningMap.get("a1").statusState, 20_000).kind, "active");
+      assert.equal(runningMap.get("a1").liveness.snapshot(20_000).kind, "active");
     } finally {
       runningMap.clear();
     }
@@ -2653,7 +2664,7 @@ describe("subagents widget rendering", () => {
           surface: "s1",
           startTime: 1_000_000 - 13_000,
           sessionFile: "sess1",
-          statusState: createStatusState({ startTimeMs: 1_000_000 - 13_000 }),
+          liveness: createLiveness({ id: "w1", name: "w1", activityFile: "/nonexistent/activity.json", startTimeMs: 1_000_000 - 13_000, interactive: false }),
         },
         {
           id: "a2",
@@ -2662,7 +2673,7 @@ describe("subagents widget rendering", () => {
           surface: "s2",
           startTime: 1_000_000 - 21_000,
           sessionFile: "sess2",
-          statusState: createStatusState({ startTimeMs: 1_000_000 - 21_000 }),
+          liveness: createLiveness({ id: "w2", name: "w2", activityFile: "/nonexistent/activity.json", startTimeMs: 1_000_000 - 21_000, interactive: false }),
         },
         {
           id: "a3",
@@ -2671,7 +2682,7 @@ describe("subagents widget rendering", () => {
           surface: "s3",
           startTime: 1_000_000 - 27_000,
           sessionFile: "sess3",
-          statusState: createStatusState({ startTimeMs: 1_000_000 - 27_000 }),
+          liveness: createLiveness({ id: "w3", name: "w3", activityFile: "/nonexistent/activity.json", startTimeMs: 1_000_000 - 27_000, interactive: false }),
         },
       ], 16);
 
@@ -2709,7 +2720,7 @@ describe("subagents widget rendering", () => {
           surface: "s1",
           startTime,
           sessionFile: "sess1",
-          statusState: createStatusState({ startTimeMs: startTime }),
+          liveness: createLiveness({ id: "w4", name: "w4", activityFile: "/nonexistent/activity.json", startTimeMs: startTime, interactive: false }),
         },
       ], width);
 
