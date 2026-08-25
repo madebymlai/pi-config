@@ -1,164 +1,181 @@
+/**
+ * web_search — Exa neural search.
+ *
+ * Exa ranks over its own index by meaning rather than keywords, so queries
+ * should describe the ideal page ("blog post benchmarking X against Y") rather
+ * than list search terms. Google's operator syntax — quoted phrases, -term,
+ * site: — has no effect here, so the tool exposes Exa's structured filters
+ * instead of composing an operator string.
+ *
+ * Cost: $0.007 per search, flat. Measured at count 1 and count 10 — both
+ * billed the same, with highlights included. The $1/1k-pages content charge on
+ * Exa's pricing page is for the standalone /contents endpoint, not for
+ * `contents` requested inline here. So `count` is bounded by how much context
+ * the results consume, not by spend. The figure Exa reports per call is
+ * surfaced in the result anyway, so a pricing change shows up rather than
+ * accumulating silently.
+ *
+ * Credentials: EXA_API_KEY, or `exa_api_key` in auth.json beside this file.
+ */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+const EXA_ENDPOINT = "https://api.exa.ai/search";
+const DEFAULT_COUNT = 8;
+const MAX_COUNT = 25;
+
+/** Exa's own taxonomy; anything else is rejected by the API. */
+const CATEGORIES = [
+	"company",
+	"publication",
+	"news",
+	"personal site",
+	"financial report",
+	"people",
+] as const;
+
 interface SearchResult {
 	title: string;
 	url: string;
 	snippet: string;
+	publishedDate?: string;
 }
 
-interface StructuredSearchArgs {
+interface SearchArgs {
 	query?: string;
-	exactPhrases?: string[];
-	excludeTerms?: string[];
-	site?: string;
+	includeDomains?: string[];
+	excludeDomains?: string[];
+	category?: string;
 	count?: number;
 }
 
-interface BuiltSearchQuery {
+interface BuiltSearch {
 	query: string;
-	baseQuery?: string;
-	exactPhrases: string[];
-	excludeTerms: string[];
-	site?: string;
-}
-
-async function googleSearch(
-	query: string,
-	count: number,
-	apiKey: string,
-	cseId: string,
-	signal?: AbortSignal,
-): Promise<SearchResult[]> {
-	const num = Math.min(count, 10);
-	const url = new URL("https://www.googleapis.com/customsearch/v1");
-	url.searchParams.set("key", apiKey);
-	url.searchParams.set("cx", cseId);
-	url.searchParams.set("q", query);
-	url.searchParams.set("num", String(num));
-
-	const resp = await fetch(url.toString(), { signal });
-	if (!resp.ok) {
-		const body = await resp.text();
-		throw new Error(`Google API ${resp.status}: ${body.slice(0, 200)}`);
-	}
-
-	const data = (await resp.json()) as {
-		items?: Array<{
-			title: string;
-			link: string;
-			snippet?: string;
-		}>;
-	};
-
-	if (!data.items || data.items.length === 0) return [];
-
-	return data.items.map((item) => ({
-		title: item.title,
-		url: item.link,
-		snippet: item.snippet?.replace(/\n/g, " ") ?? "",
-	}));
+	includeDomains: string[];
+	excludeDomains: string[];
+	category?: string;
 }
 
 const EXT_DIR = path.dirname(new URL(import.meta.url).pathname);
 const AUTH_PATH = path.join(EXT_DIR, "auth.json");
 
-function loadCredentials(): { apiKey: string; cseId: string } | null {
-	const envApiKey = process.env.GOOGLE_SEARCH_API_KEY ?? process.env.GOOGLE_API_KEY;
-	const envCseId = process.env.GOOGLE_CSE_ID ?? process.env.GOOGLE_CUSTOM_SEARCH_ENGINE_ID;
-	if (envApiKey && envCseId) return { apiKey: envApiKey, cseId: envCseId };
+function loadApiKey(): string | null {
+	const fromEnv = process.env.EXA_API_KEY;
+	if (fromEnv) return fromEnv;
 
 	if (!fs.existsSync(AUTH_PATH)) return null;
 	try {
 		const config = JSON.parse(fs.readFileSync(AUTH_PATH, "utf-8"));
-		const apiKey = config.google_search_api_key as string;
-		const cseId = config.google_cse_id as string;
-		if (apiKey && cseId) return { apiKey, cseId };
+		const key = config.exa_api_key as string;
+		if (key) return key;
 	} catch {}
 	return null;
+}
+
+/** Reduce "https://example.com/docs/" and "site:example.com" alike to "example.com". */
+function normalizeDomain(value: string): string | undefined {
+	let domain = value.trim().replace(/^site:/i, "").trim();
+	if (!domain) return undefined;
+
+	try {
+		const candidate = /^[a-z]+:\/\//i.test(domain) ? domain : `https://${domain}`;
+		const url = new URL(candidate);
+		if (url.hostname) domain = url.hostname;
+	} catch {}
+
+	return domain.replace(/\/+$/, "") || undefined;
+}
+
+function cleanDomains(values?: string[]): string[] {
+	if (!values) return [];
+	return values.map(normalizeDomain).filter((d): d is string => Boolean(d));
+}
+
+function buildSearch(args: SearchArgs): BuiltSearch {
+	const query = args.query?.trim().replace(/\s+/g, " ");
+	if (!query) throw new Error("'query' is required.");
+
+	const category = args.category?.trim().toLowerCase();
+	if (category && !(CATEGORIES as readonly string[]).includes(category)) {
+		throw new Error(
+			`Unknown category "${category}". Expected one of: ${CATEGORIES.join(", ")}.`,
+		);
+	}
+
+	return {
+		query,
+		includeDomains: cleanDomains(args.includeDomains),
+		excludeDomains: cleanDomains(args.excludeDomains),
+		category,
+	};
+}
+
+async function exaSearch(
+	built: BuiltSearch,
+	count: number,
+	apiKey: string,
+	signal?: AbortSignal,
+): Promise<{ results: SearchResult[]; cost?: number }> {
+	const body: Record<string, unknown> = {
+		query: built.query,
+		type: "fast",
+		numResults: Math.min(count, MAX_COUNT),
+		// Highlights give the model enough to choose which URLs are worth a
+		// web_fetch. Full text is deliberately not requested: web_fetch already
+		// extracts it locally for free, for only the pages actually chosen.
+		contents: { highlights: true },
+	};
+	if (built.includeDomains.length > 0) body.includeDomains = built.includeDomains;
+	if (built.excludeDomains.length > 0) body.excludeDomains = built.excludeDomains;
+	if (built.category) body.category = built.category;
+
+	const resp = await fetch(EXA_ENDPOINT, {
+		method: "POST",
+		headers: { "x-api-key": apiKey, "content-type": "application/json" },
+		body: JSON.stringify(body),
+		signal,
+	});
+
+	if (!resp.ok) {
+		const text = await resp.text();
+		throw new Error(`Exa API ${resp.status}: ${text.slice(0, 200)}`);
+	}
+
+	const data = (await resp.json()) as {
+		results?: Array<{
+			title?: string;
+			url: string;
+			highlights?: string[];
+			publishedDate?: string;
+		}>;
+		costDollars?: { total?: number };
+	};
+
+	const results = (data.results ?? []).map((item) => ({
+		title: item.title?.trim() || item.url,
+		url: item.url,
+		snippet: (item.highlights ?? []).join(" … ").replace(/\s+/g, " ").trim(),
+		publishedDate: item.publishedDate,
+	}));
+
+	return { results, cost: data.costDollars?.total };
 }
 
 function formatResults(results: SearchResult[]): string {
 	if (results.length === 0) return "No results found.";
 	return results
-		.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`)
+		.map((r, i) => {
+			const date = r.publishedDate ? ` (${r.publishedDate.slice(0, 10)})` : "";
+			return `${i + 1}. ${r.title}${date}\n   ${r.url}\n   ${r.snippet}`;
+		})
 		.join("\n\n");
 }
 
-function stripWrappingQuotes(value: string): string {
-	return value.length >= 2 && value.startsWith('"') && value.endsWith('"')
-		? value.slice(1, -1).trim()
-		: value;
-}
-
-function cleanItems(values?: string[]): string[] {
-	if (!values) return [];
-	return values
-		.map((value) => stripWrappingQuotes(value.trim().replace(/\s+/g, " ")))
-		.filter(Boolean);
-}
-
-function cleanQuery(value?: string): string | undefined {
-	if (typeof value !== "string") return undefined;
-	const cleaned = value.trim().replace(/\s+/g, " ");
-	return cleaned || undefined;
-}
-
-function normalizeSite(site?: string): string | undefined {
-	if (typeof site !== "string") return undefined;
-
-	let value = site.trim().replace(/^site:/i, "").trim();
-	if (!value) return undefined;
-
-	try {
-		const candidate = /^[a-z]+:\/\//i.test(value)
-			? value
-			: `https://${value}`;
-		const url = new URL(candidate);
-		if (url.hostname) value = url.hostname;
-	} catch {}
-
-	return value.replace(/\/+$/, "") || undefined;
-}
-
-function quoteForSearch(value: string): string {
-	return `"${value.replace(/"/g, '\\"')}"`;
-}
-
-function buildSearchQuery(args: StructuredSearchArgs): BuiltSearchQuery {
-	const baseQuery = cleanQuery(args.query);
-	const exactPhrases = cleanItems(args.exactPhrases);
-	const excludeTerms = cleanItems(args.excludeTerms);
-	const site = normalizeSite(args.site);
-
-	if (!baseQuery && exactPhrases.length === 0) {
-		throw new Error(
-			"At least one of 'query' or 'exactPhrases' is required.",
-		);
-	}
-
-	const parts: string[] = [];
-	if (baseQuery) parts.push(baseQuery);
-	for (const phrase of exactPhrases) {
-		parts.push(quoteForSearch(phrase));
-	}
-	for (const term of excludeTerms) {
-		parts.push(`-${term.includes(" ") ? quoteForSearch(term) : term}`);
-	}
-	if (site) {
-		parts.push(`site:${site}`);
-	}
-
-	return {
-		query: parts.join(" "),
-		baseQuery,
-		exactPhrases,
-		excludeTerms,
-		site,
-	};
+function formatCost(cost?: number): string {
+	return cost === undefined ? "" : `$${cost.toFixed(4)}`;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -166,103 +183,96 @@ export default function (pi: ExtensionAPI) {
 		name: "web_search",
 		label: "Web Search",
 		description:
-			"Search the web via Google Custom Search API. Build one search per call from a base query string, exact phrases, exclusions, and an optional site. Returns title, URL, and snippet.",
+			"Search the web via Exa, which ranks by meaning over its own index. Describe the ideal page in the query rather than listing keywords. Optionally restrict or exclude domains, or filter to a content category. Returns title, URL, publication date, and a relevance snippet.",
 		promptSnippet:
-			"Search the web via a query string plus optional exactPhrases, excludeTerms, and site. Use one tool call per search angle.",
+			"Search the web by describing the ideal page, with optional domain filters and a content category. Use one tool call per search angle.",
 		promptGuidelines: [
-			"Use exactPhrases for exact phrase matching instead of embedding quote marks inside the main query string.",
+			"Write the query as a description of the page you want ('blog post comparing X and Y performance'), not as keywords. This is a neural index, so Google operators such as quotes, minus signs, and site: do nothing.",
 			"Use one web_search tool call per search angle instead of batching multiple searches into one call.",
+			"Prefer the category filter over wording the query to imply a source type: 'publication' for papers, 'news' for reporting, 'company' for vendor pages.",
+			"Results are not billed individually, but they do consume context. Raise count when a search needs breadth; lower it when only the top hit matters.",
 		],
 
 		parameters: Type.Object({
-			query: Type.Optional(
-				Type.String({
-					description:
-						"Base search query as a normal string. Prefer this for the main search wording.",
-				}),
-			),
-			exactPhrases: Type.Optional(
+			query: Type.String({
+				description:
+					"Description of the ideal page, in natural language. Prefer 'in-depth guide to X configuration' over 'X config'.",
+			}),
+			includeDomains: Type.Optional(
 				Type.Array(Type.String(), {
 					description:
-						"Exact phrases to match. Each item becomes a quoted phrase in the final Google query.",
+						"Restrict results to these domains, such as example.com or a full URL.",
 				}),
 			),
-			excludeTerms: Type.Optional(
+			excludeDomains: Type.Optional(
 				Type.Array(Type.String(), {
-					description:
-						"Terms or phrases to exclude. Multi-word items are excluded as exact phrases.",
+					description: "Drop results from these domains.",
 				}),
 			),
-			site: Type.Optional(
-				Type.String({
-					description:
-						"Optional site/domain restriction, such as example.com or a full URL.",
-				}),
+			category: Type.Optional(
+				Type.Union(
+					CATEGORIES.map((c) => Type.Literal(c)),
+					{
+						description:
+							"Restrict to a kind of page. Use 'publication' for papers and specs, 'news' for reporting.",
+					},
+				),
 			),
 			count: Type.Optional(
 				Type.Number({
-					description: "Number of results to return (default: 5, max: 10)",
+					description: `Number of results (default: ${DEFAULT_COUNT}, max: ${MAX_COUNT}). Costs the same at any value; the tradeoff is context size.`,
 					minimum: 1,
-					maximum: 10,
+					maximum: MAX_COUNT,
 				}),
 			),
 		}),
 
-		async execute(_toolCallId, params: StructuredSearchArgs, signal) {
-			const creds = loadCredentials();
-			if (!creds) {
+		async execute(_toolCallId, params: SearchArgs, signal) {
+			const apiKey = loadApiKey();
+			if (!apiKey) {
 				throw new Error(
-					`Missing Google Custom Search credentials. Set GOOGLE_SEARCH_API_KEY and GOOGLE_CSE_ID, or create ${AUTH_PATH} from auth.example.json. Get credentials from https://developers.google.com/custom-search/v1/introduction`,
+					`Missing Exa API key. Set EXA_API_KEY, or create ${AUTH_PATH} from auth.example.json. Get a key from https://dashboard.exa.ai`,
 				);
 			}
 
-			const count = params.count ?? 5;
-			const built = buildSearchQuery(params);
-			const results = await googleSearch(
-				built.query,
-				count,
-				creds.apiKey,
-				creds.cseId,
-				signal,
-			);
+			const count = params.count ?? DEFAULT_COUNT;
+			const built = buildSearch(params);
+			const { results, cost } = await exaSearch(built, count, apiKey, signal);
 
 			return {
-				content: [
-					{
-						type: "text" as const,
-						text: formatResults(results),
-					},
-				],
+				content: [{ type: "text" as const, text: formatResults(results) }],
 				details: {
-					composedQuery: built.query,
-					query: built.baseQuery,
-					exactPhrases: built.exactPhrases,
-					excludeTerms: built.excludeTerms,
-					site: built.site,
+					query: built.query,
+					includeDomains: built.includeDomains,
+					excludeDomains: built.excludeDomains,
+					category: built.category,
 					resultCount: results.length,
+					cost,
 				},
 			};
 		},
 
 		renderCall(args, theme, context) {
-			const text =
-				(context.lastComponent as Text | undefined) ??
-				new Text("", 0, 0);
-			const { count, ...searchArgs } = args as StructuredSearchArgs;
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const { count, ...searchArgs } = args as SearchArgs;
 
 			try {
-				const built = buildSearchQuery(searchArgs);
+				const built = buildSearch(searchArgs);
 				const display =
-					built.query.length > 70
-						? built.query.slice(0, 67) + "..."
-						: built.query;
+					built.query.length > 70 ? built.query.slice(0, 67) + "..." : built.query;
 				const lines = [
 					theme.fg("toolTitle", theme.bold("search ")) +
 						theme.fg("accent", `"${display}"`),
 				];
-				if (count && count !== 5) {
-					lines.push(theme.fg("dim", `  count: ${count}`));
-				}
+
+				const filters = [
+					built.category ? `category: ${built.category}` : "",
+					built.includeDomains.length > 0 ? `only: ${built.includeDomains.join(", ")}` : "",
+					built.excludeDomains.length > 0 ? `not: ${built.excludeDomains.join(", ")}` : "",
+					count && count !== DEFAULT_COUNT ? `count: ${count}` : "",
+				].filter(Boolean);
+				if (filters.length > 0) lines.push(theme.fg("dim", `  ${filters.join(" · ")}`));
+
 				text.setText(lines.join("\n"));
 				return text;
 			} catch {
@@ -275,9 +285,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderResult(result, { expanded, isPartial }, theme, context) {
-			const text =
-				(context.lastComponent as Text | undefined) ??
-				new Text("", 0, 0);
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 
 			if (isPartial) {
 				text.setText(theme.fg("warning", "Searching…"));
@@ -285,38 +293,30 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (context.isError) {
-				const msg =
-					result.content.find((c) => c.type === "text")?.text ||
-					"Error";
+				const msg = result.content.find((c) => c.type === "text")?.text || "Error";
 				text.setText(theme.fg("error", msg));
 				return text;
 			}
 
 			const details = result.details as {
-				composedQuery?: string;
+				query?: string;
 				resultCount?: number;
+				cost?: number;
 			};
-			const status = theme.fg(
-				"success",
-				`${details?.resultCount ?? 0} results`,
-			);
+			const spend = formatCost(details?.cost);
+			const status =
+				theme.fg("success", `${details?.resultCount ?? 0} results`) +
+				(spend ? theme.fg("dim", `  ${spend}`) : "");
+
 			if (!expanded) {
 				text.setText(status);
 				return text;
 			}
 
-			const content =
-				result.content.find((c) => c.type === "text")?.text || "";
-			const preview =
-				content.length > 500 ? content.slice(0, 500) + "..." : content;
-			const queryLine = details?.composedQuery
-				? theme.fg("dim", `query: ${details.composedQuery}`)
-				: "";
-			text.setText(
-				[status, queryLine, theme.fg("dim", preview)]
-					.filter(Boolean)
-					.join("\n"),
-			);
+			const content = result.content.find((c) => c.type === "text")?.text || "";
+			const preview = content.length > 500 ? content.slice(0, 500) + "..." : content;
+			const queryLine = details?.query ? theme.fg("dim", `query: ${details.query}`) : "";
+			text.setText([status, queryLine, theme.fg("dim", preview)].filter(Boolean).join("\n"));
 			return text;
 		},
 	});
