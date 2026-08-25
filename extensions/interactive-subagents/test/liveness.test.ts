@@ -52,7 +52,6 @@ function makeLiveness(dir: string, opts: { interactive?: boolean; id?: string } 
     remove: () => rmSync(activityFile, { force: true }),
     liveness: createLiveness({
       id,
-      name: "Worker",
       activityFile,
       startTimeMs: 0,
       interactive: opts.interactive ?? false,
@@ -427,7 +426,9 @@ describe("liveness.ts", () => {
       withTempDir((dir) => {
         const { liveness } = makeLiveness(dir);
         liveness.tick(1_000);
-        assert.deepEqual(liveness.tick(2_000), { kindChanged: false, transition: null });
+        const { kindChanged, transition } = liveness.tick(2_000);
+        assert.equal(kindChanged, false);
+        assert.equal(transition, null);
       });
     });
 
@@ -442,15 +443,14 @@ describe("liveness.ts", () => {
       });
     });
 
-    it("produces a transition line once a subagent stalls", () => {
+    it("reports a stalled transition once a subagent stops reporting", () => {
       withTempDir((dir) => {
         const { liveness } = makeLiveness(dir);
         liveness.tick(1_000);
 
         const stalled = liveness.tick(SNAPSHOT_STALLED_AFTER_MS + 2_000);
-        assert.ok(stalled.transition, "expected a stalled transition line");
-        assert.match(stalled.transition, /Worker/);
-        assert.match(stalled.transition, /stalled/i);
+        assert.equal(stalled.transition, "stalled");
+        assert.equal(stalled.snapshot.kind, "stalled", "the snapshot comes back for rendering");
 
         assert.equal(
           liveness.tick(SNAPSHOT_STALLED_AFTER_MS + 3_000).transition,
@@ -464,7 +464,7 @@ describe("liveness.ts", () => {
       withTempDir((dir) => {
         const { liveness, write } = makeLiveness(dir);
         liveness.tick(1_000);
-        assert.match(liveness.tick(95_000).transition ?? "", /stalled/i);
+        assert.equal(liveness.tick(95_000).transition, "stalled");
 
         write({
           updatedAt: 96_000,
@@ -476,7 +476,7 @@ describe("liveness.ts", () => {
         });
 
         const recovered = liveness.tick(97_000);
-        assert.match(recovered.transition ?? "", /recovered/i);
+        assert.equal(recovered.transition, "recovered");
         assert.equal(liveness.snapshot(97_000).kind, "waiting");
       });
     });

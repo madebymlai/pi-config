@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { renderSubagentWidget, type WidgetRow } from "../render/widget.ts";
-import type { StatusSnapshot } from "../render/status.ts";
+import type { StatusSnapshot } from "../observe/status-snapshot.ts";
 
 /** A snapshot is a plain value here — the widget only ever reads it. */
 function snapshot(over: Partial<StatusSnapshot> = {}): StatusSnapshot {

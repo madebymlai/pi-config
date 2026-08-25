@@ -56,6 +56,7 @@ import { readNameRegistry, registerName, resolveNameInRegistry } from "./store/n
 import {
   capStatusLines,
   formatStatusAggregate,
+  formatTransitionLine,
   loadStatusConfig,
 } from "./render/status.ts";
 import { createLiveness, getSubagentActivityFile, type SubagentLiveness } from "./observe/liveness.ts";
@@ -425,9 +426,11 @@ function startStatusRefresh(pi: ExtensionAPI) {
     let shouldRefreshWidget = false;
 
     for (const running of runningSubagents.values()) {
-      const { kindChanged, transition } = running.liveness.tick(now);
+      const { kindChanged, transition, snapshot } = running.liveness.tick(now);
       if (kindChanged) shouldRefreshWidget = true;
-      if (transition) transitionLines.push(transition);
+      // liveness reports the transition; turning it into a sentence is this
+      // layer's job, which is what keeps observe/ from importing render/.
+      if (transition) transitionLines.push(formatTransitionLine(running.name, snapshot, transition));
     }
 
     if (shouldRefreshWidget) updateWidget();
@@ -766,7 +769,6 @@ function runSubagent(pi: ExtensionAPI, run: SubagentRun): RunningSubagent {
     abortController: watcherAbort,
     liveness: createLiveness({
       id: run.id,
-      name: run.name,
       activityFile: run.activityFile,
       startTimeMs: run.startTime,
       interactive: run.interactive,

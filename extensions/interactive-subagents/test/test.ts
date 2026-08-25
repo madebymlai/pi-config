@@ -45,8 +45,8 @@ import {
   formatTransitionLine,
   loadStatusConfig,
   parseStatusConfig,
-  type StatusSnapshot,
 } from "../render/status.ts";
+import type { StatusSnapshot } from "../observe/status-snapshot.ts";
 import { createSubagentActivityRecorder, writeSubagentActivityFile } from "../child/activity-recorder.ts";
 import { readSubagentActivityFile } from "../observe/activity-reader.ts";
 import { getSubagentActivityFile } from "../protocol/activity.ts";
@@ -1515,7 +1515,6 @@ describe("subagent interruption", () => {
     const activityFile = join(dir, `activity-${id}.json`);
     const liveness = createLiveness({
       id,
-      name,
       activityFile,
       startTimeMs: 0,
       interactive: (overrides.interactive as boolean) ?? false,

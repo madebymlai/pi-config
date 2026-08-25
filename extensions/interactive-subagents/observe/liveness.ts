@@ -23,14 +23,13 @@ import {
 } from "../protocol/activity.ts";
 import {
   formatElapsedDuration,
-  formatTransitionLine,
   SUBAGENT_STATUS_KINDS,
   type StatusActivityPhase,
   type StatusSnapshot,
   type StatusSnapshotState,
   type SubagentStatusKind,
   type SubagentStatusTransition,
-} from "../render/status.ts";
+} from "./status-snapshot.ts";
 
 /** How long without a healthy snapshot before a subagent counts as stalled. */
 export const SNAPSHOT_STALLED_AFTER_MS = 60_000;
@@ -319,15 +318,24 @@ export interface SubagentLiveness {
   /**
    * Observe, then advance time-based transitions.
    *
-   * `kindChanged` means the widget needs a repaint. `transition` is the line to
-   * steer the parent with, or null — null both when nothing changed and when
+   * `kindChanged` means the widget needs a repaint. `transition` is what the
+   * parent should be told, or null — null both when nothing changed and when
    * this subagent is interactive, since the user is already watching its pane
    * and a "still waiting" ping would burn an orchestrator turn on a no-op.
+   *
+   * It reports the transition, not a sentence about it. Formatting one used to
+   * happen here, which made the machine import from the render layer; the
+   * snapshot comes back alongside so a caller can render it without asking
+   * twice.
    *
    * Only one ticker may call this: advancing from two places would let a single
    * transition fire twice.
    */
-  tick(now: number): { kindChanged: boolean; transition: string | null };
+  tick(now: number): {
+    kindChanged: boolean;
+    transition: SubagentStatusTransition;
+    snapshot: StatusSnapshot;
+  };
   /** The parent just steered this subagent, so it is no longer idle. */
   interrupted(now: number): void;
   /** Current classified status, for rendering. */
@@ -337,7 +345,6 @@ export interface SubagentLiveness {
 export function createLiveness(params: {
   /** Identifies whose activity file this is; a mismatched id reads as missing. */
   id: string;
-  name: string;
   activityFile: string;
   startTimeMs: number;
   /** Interactive subagents are user-driven, so transitions stay local. */
@@ -392,10 +399,8 @@ export function createLiveness(params: {
 
       return {
         kindChanged: nextState.currentKind !== previousKind,
-        transition:
-          transition && !params.interactive
-            ? formatTransitionLine(params.name, snapshot, transition)
-            : null,
+        transition: transition && !params.interactive ? transition : null,
+        snapshot,
       };
     },
 

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createLiveness, SNAPSHOT_STALLED_AFTER_MS } from "../observe/liveness.ts";
-import { SUBAGENT_STATUS_KINDS, SUBAGENT_STATUS_TRANSITIONS } from "../render/status.ts";
+import { SUBAGENT_STATUS_KINDS, SUBAGENT_STATUS_TRANSITIONS } from "../observe/status-snapshot.ts";
 import { writeSubagentActivityFile } from "../child/activity-recorder.ts";
 import type { SubagentActivityState } from "../protocol/activity.ts";
 
@@ -79,7 +79,6 @@ function run(sequence: Action[], activityFile: string) {
   const transitions: string[] = [];
   const liveness = createLiveness({
     id: CHILD_ID,
-    name: "Worker",
     activityFile,
     startTimeMs: 0,
     interactive: false,
@@ -97,9 +96,8 @@ function run(sequence: Action[], activityFile: string) {
     if (action.interrupt) {
       liveness.interrupted(now);
     } else {
-      const line = liveness.tick(now).transition;
-      // tick reports a formatted line; recover the transition it was built from.
-      if (line) transitions.push(/recovered/i.test(line) ? "recovered" : "stalled");
+      const { transition } = liveness.tick(now);
+      if (transition) transitions.push(transition);
     }
     kinds.push(liveness.snapshot(now).kind);
   }
@@ -149,7 +147,6 @@ describe("status machine reachability", () => {
     try {
       const liveness = createLiveness({
         id: CHILD_ID,
-        name: "Worker",
         activityFile: join(dir, "activity.json"),
         startTimeMs: 0,
         interactive: false,

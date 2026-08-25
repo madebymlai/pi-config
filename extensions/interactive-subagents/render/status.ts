@@ -1,48 +1,17 @@
 import { readFileSync } from "node:fs";
+import type {
+  StatusSnapshot,
+  SubagentStatusTransition,
+} from "../observe/status-snapshot.ts";
 import { paths } from "../paths.ts";
 
 export const DEFAULT_STATUS_LINE_LIMIT = 4;
 export const MAX_STATUS_NAME_LENGTH = 72;
 export const MAX_STATUS_LINE_LENGTH = 120;
 
-/**
- * The status machine's nodes, S0 first. The list is the source of truth and the
- * type derives from it, so the two cannot drift apart.
- *
- * Every node here must be reachable from S0 by some sequence of observations;
- * test/reachability.test.ts proves that by exploring the state space. That test
- * is what caught the "running" node, which nothing had been able to produce for
- * a long time while three call sites still rendered it.
- */
-export const SUBAGENT_STATUS_KINDS = ["starting", "active", "waiting", "stalled"] as const;
-export type SubagentStatusKind = (typeof SUBAGENT_STATUS_KINDS)[number];
-
-/** The transitions worth waking a parent for. Same reachability rule applies. */
-export const SUBAGENT_STATUS_TRANSITIONS = ["stalled", "recovered"] as const;
-export type SubagentStatusTransition = (typeof SUBAGENT_STATUS_TRANSITIONS)[number] | null;
-export type StatusSnapshotState = "unseen" | "present" | "missing" | "invalid" | "wrong-id";
-export type StatusActivityPhase = "starting" | "active" | "waiting" | "done";
-
 export interface StatusConfig {
   enabled: boolean;
   lineLimit: number;
-}
-
-export interface StatusSnapshot {
-  kind: SubagentStatusKind;
-  elapsedMs: number;
-  elapsedText: string;
-  activeSinceMs: number | null;
-  activeDurationText: string | null;
-  activeScope: string | null;
-  waitingSinceMs: number | null;
-  waitingDurationText: string | null;
-  latestEvent: string | null;
-  activityLabel: string | null;
-  snapshotState: StatusSnapshotState;
-  snapshotError: string | null;
-  snapshotProblemText: string | null;
-  statusLabel: string | null;
 }
 
 export interface CappedStatusLines {
@@ -147,17 +116,6 @@ export function loadStatusConfig(
   }
 
   return parseStatusConfig(parsed, sourcePath);
-}
-
-export function formatElapsedDuration(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  if (hours > 0) return `${hours}h ${minutes}m`;
-
-  return `${minutes}m`;
 }
 
 function formatActiveDetail(snapshot: StatusSnapshot): string {

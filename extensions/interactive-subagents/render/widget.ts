@@ -14,7 +14,7 @@
  * maps its own records to rows, which keeps the launcher's shape out of here.
  */
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { StatusSnapshot } from "./status.ts";
+import type { StatusSnapshot } from "../observe/status-snapshot.ts";
 
 export interface WidgetRow {
   /** Display name, unique per spawner session. */

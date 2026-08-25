@@ -10,7 +10,7 @@ import {
 import { KNOWN_EVENTS, KNOWN_PHASES, KNOWN_SCOPES } from "../protocol/activity.ts";
 import { readSubagentActivityFile } from "../observe/activity-reader.ts";
 import { createLiveness, SNAPSHOT_STALLED_AFTER_MS } from "../observe/liveness.ts";
-import { SUBAGENT_STATUS_KINDS } from "../render/status.ts";
+import { SUBAGENT_STATUS_KINDS } from "../observe/status-snapshot.ts";
 
 /**
  * The contract between the two processes, exercised end to end.
@@ -86,7 +86,7 @@ function explore(): Observed {
           now: () => clock,
         });
         const liveness = createLiveness({
-          id: CHILD_ID, name: "Worker", activityFile, startTimeMs: 0, interactive: false,
+          id: CHILD_ID, activityFile, startTimeMs: 0, interactive: false,
         });
 
         for (const [name, move] of [[firstName, first], [secondName, second]] as const) {
