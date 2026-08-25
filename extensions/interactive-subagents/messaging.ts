@@ -51,6 +51,7 @@ export type Delivery =
   | { status: "resumed"; name: string; sessionId: string }
   | { status: "sent-to-parent" }
   | { status: "no-parent" }
+  | { status: "no-default-recipient"; known: string[] }
   | { status: "unknown-target"; known: string[] }
   | { status: "empty-message" }
   | { status: "unresumable"; reason: string }
@@ -100,13 +101,26 @@ function eligibleTransports(to: string) {
   return CONTRIBUTORS.flatMap((contributor) => hub().get(contributor) ?? []);
 }
 
+function allTransports() {
+  return CONTRIBUTORS.flatMap((contributor) => hub().get(contributor) ?? []);
+}
+
 function reasonOf(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return message || "(no detail)";
 }
 
-/** Ask each transport in turn; the first to claim the recipient decides the outcome. */
-async function route(to: string, message: string, ctx: MessagingContext): Promise<Delivery> {
+/**
+ * Ask each transport in turn; the first to claim the recipient decides the
+ * outcome. `defaulted` says the caller left `to` unset and it was resolved to
+ * the parent, which only changes how an unreachable parent is explained.
+ */
+async function route(
+  to: string,
+  message: string,
+  ctx: MessagingContext,
+  defaulted = false,
+): Promise<Delivery> {
   const transports = eligibleTransports(to);
   let failure: Delivery | null = null;
 
@@ -125,12 +139,16 @@ async function route(to: string, message: string, ctx: MessagingContext): Promis
 
   if (failure) return failure;
 
-  // Nothing claimed it. Addressing a parent you do not have is a different
-  // mistake from naming a subagent that does not exist, so it reads differently.
-  if (to === PARENT) return { status: "no-parent" };
+  // Nothing claimed it. Three different mistakes, so three different messages:
+  // relying on a default with nothing above you, naming a parent you do not
+  // have, and naming a subagent that does not exist.
+  if (to === PARENT && !defaulted) return { status: "no-parent" };
 
+  // Listing recipients is a different question from delivering to one: a
+  // defaulted `to` narrowed the search to the parent slot, but the names worth
+  // suggesting are every name anything can reach.
   const known: string[] = [];
-  for (const transport of transports) {
+  for (const transport of defaulted ? allTransports() : transports) {
     try {
       for (const name of transport.known(ctx)) if (!known.includes(name)) known.push(name);
     } catch {
@@ -138,6 +156,8 @@ async function route(to: string, message: string, ctx: MessagingContext): Promis
       // others from explaining themselves.
     }
   }
+
+  if (defaulted) return { status: "no-default-recipient", known };
   return { status: "unknown-target", known };
 }
 
@@ -195,6 +215,18 @@ function describe(delivery: Delivery): Presentation {
           `You are the top-level session, so there is no "${PARENT}" to message. ` +
           `Address a subagent by name instead.`,
       };
+    case "no-default-recipient":
+      return {
+        tone: "error",
+        glyph: "✗",
+        summary: "no recipient named",
+        text:
+          `You left \`to\` unset, which means "the agent that spawned me" — but you are the ` +
+          `top-level session and nothing spawned you. Name the recipient explicitly. ` +
+          (delivery.known.length > 0
+            ? `Known recipients: ${delivery.known.join(", ")}.`
+            : `No subagents are addressable yet.`),
+      };
     case "unknown-target":
       return {
         tone: "error",
@@ -246,8 +278,9 @@ export function registerSendMessage(
     name: "send_message",
     label: "Send Message",
     description:
-      "Send a message to another agent in this session, addressed by display name. " +
-      `Use "${PARENT}" to reach the agent that spawned you; use a subagent's name to reach it. ` +
+      "Send a message to another agent in this session. " +
+      "Omit `to` to reach the agent that spawned you — the usual case. " +
+      "Name a subagent in `to` to reach it instead. " +
       "Names are unique within your session and persist after a subagent finishes, so the SAME name " +
       "works whether it is running or finished: a running subagent is steered mid-task, a finished one " +
       "is resumed and continued. " +
@@ -258,12 +291,12 @@ export function registerSendMessage(
       "DO NOT poll, sleep, tail logs, or read session files to detect a reply — the harness handles delivery. " +
       "DO NOT fabricate or assume a reply. After calling, either wait or work on other independent tasks.",
     promptSnippet:
-      `Message another agent by name — "${PARENT}" for the one that spawned you, or a subagent's name ` +
-      "(steers it if running, resumes it if finished). Both `to` and `message` are required. " +
+      "Message another agent. Omit `to` to reach the one that spawned you; name a subagent in `to` " +
+      "to reach it instead (steers it if running, resumes it if finished). " +
       "Never poll for a reply and never fabricate one.",
     promptGuidelines: [
-      `Address the agent that spawned you as "${PARENT}". Every other recipient is a subagent's display name.`,
-      "Always name the recipient explicitly. There is no default, so a message can never reach the wrong agent silently.",
+      "Leave `to` unset to reach the agent that spawned you. Every other recipient is a subagent's display name.",
+      "If you have subagents of your own, name the one you mean — an unset `to` always goes upward, never to a child.",
       "Ask one thing per message. Make separate calls for unrelated questions.",
       "Give enough context that the recipient can act without re-reading your whole task.",
       "After messaging the parent, stop and wait — their reply arrives as your next turn.",
@@ -271,11 +304,14 @@ export function registerSendMessage(
     ],
 
     parameters: Type.Object({
-      to: Type.String({
-        description:
-          `Display name of the recipient, or "${PARENT}" for the agent that spawned you. ` +
-          "A subagent's name works whether it is still running or has already finished.",
-      }),
+      to: Type.Optional(
+        Type.String({
+          description:
+            "Display name of the recipient. A subagent's name works whether it is still running " +
+            `or has already finished. Omit to reach the agent that spawned you, or say "${PARENT}" ` +
+            "explicitly. A top-level session has no parent and must name a recipient.",
+        }),
+      ),
       message: Type.String({
         description:
           "What to say: a follow-up instruction for a running subagent, the next task for a finished " +
@@ -284,7 +320,7 @@ export function registerSendMessage(
     }),
 
     renderCall(args, theme) {
-      const target = (args as { to?: string }).to?.trim() || "(unknown)";
+      const target = (args as { to?: string }).to?.trim() || PARENT;
       return new Text(
         "○ " + theme.fg("toolTitle", theme.bold(target)) + theme.fg("dim", " — message"),
         0,
@@ -298,14 +334,18 @@ export function registerSendMessage(
     },
 
     async execute(_toolCallId, params: { to?: string; message?: string }, _signal, _onUpdate, ctx) {
-      const to = params.to?.trim() ?? "";
+      const named = params.to?.trim() ?? "";
+      // No recipient means the agent that spawned you — the only direction a
+      // subagent can mean without saying so. A top-level session has nothing
+      // above it and is told to name someone.
+      const to = named || PARENT;
       const message = params.message?.trim() ?? "";
 
       // Validation precedes routing so a malformed call never reaches a
       // transport and never half-delivers.
       const delivery: Delivery = !message
         ? { status: "empty-message" }
-        : await route(to, message, ctx as MessagingContext);
+        : await route(to, message, ctx as MessagingContext, !named);
 
       return {
         content: [{ type: "text" as const, text: describe(delivery).text }],

@@ -1567,7 +1567,7 @@ describe("tool registration", () => {
     assert.match(output, /\(unnamed\)/);
   });
 
-  it("registers send_message with to + message both required (name-only addressing)", () => {
+  it("registers send_message with message required and to optional (defaults to the parent)", () => {
     const { api, registeredTools } = createMockExtensionApi();
     (subagentsModule as any).default(api);
 
@@ -1583,9 +1583,9 @@ describe("tool registration", () => {
     assert.equal(props.message.type, "string");
     assert.equal(props.to.type, "string");
     assert.deepEqual(
-      messageTool.parameters.required?.slice().sort(),
-      ["message", "to"],
-      "to and message should both be required",
+      messageTool.parameters.required?.slice(),
+      ["message"],
+      "only message is required; an unset `to` means the agent that spawned you",
     );
     assert.equal(props.sessionId, undefined, "sessionId should be removed");
     assert.equal(props.name, undefined, "name should be replaced by to");

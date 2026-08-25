@@ -30,6 +30,9 @@ function fakeTransport(
 
 const ctx = { sessionManager: {} } as any;
 
+/** Theme stub: renderCall only needs fg/bold to return something printable. */
+const stubTheme = { fg: (_t: string, s: string) => s, bold: (s: string) => s } as any;
+
 function sendMessageTool(...contributions: Array<[Contributor, Transport[]]>) {
   const { api, registeredTools } = createMockExtensionApi();
   for (const [contributor, transports] of contributions) {
@@ -44,10 +47,10 @@ describe("messaging.ts", () => {
   beforeEach(() => __test__.resetTransports());
 
   describe("schema", () => {
-    it("exposes exactly `to` and `message`, both required", () => {
+    it("exposes exactly `to` and `message`, with only `message` required", () => {
       const tool = sendMessageTool(["children", []]);
       assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["message", "to"]);
-      assert.deepEqual([...(tool.parameters.required ?? [])].sort(), ["message", "to"]);
+      assert.deepEqual([...(tool.parameters.required ?? [])], ["message"]);
     });
 
     it("registers once per contributor, which first-wins aggregation collapses", () => {
@@ -257,7 +260,7 @@ describe("messaging.ts", () => {
       assert.deepEqual(out.details.known, ["scout"]);
     });
 
-    it("rejects a blank recipient and a blank message without consulting transports", async () => {
+    it("routes a blank recipient to the parent and rejects a blank message", async () => {
       const children = fakeTransport(["scout"], { status: "steered", name: "scout" });
       const tool = sendMessageTool(["children", [children]]);
 
@@ -270,7 +273,7 @@ describe("messaging.ts", () => {
         ctx,
       );
 
-      assert.equal(blankTo.details.status, "unknown-target");
+      assert.equal(blankTo.details.status, "no-default-recipient");
       assert.equal(blankMsg.details.status, "empty-message");
       assert.deepEqual(children.delivered, []);
     });
@@ -315,8 +318,9 @@ describe("messaging.ts", () => {
 
     it("renders a partial call without throwing", () => {
       const tool = sendMessageTool(["children", []]);
+      // No recipient named: the call renders against where it will actually go.
       const output = tool.renderCall({}, theme).render(80).join("\n");
-      assert.match(output, /\(unknown\)/);
+      assert.match(output, new RegExp(PARENT));
     });
 
     it("renders every delivery outcome distinguishably", () => {
@@ -345,6 +349,76 @@ describe("messaging.ts", () => {
         "each outcome should render differently",
       );
       for (const line of rendered) assert.ok(line.trim().length > 0);
+    });
+  });
+
+  describe("omitting `to`", () => {
+    // A leaf subagent only ever messages upward, so making it name the parent
+    // every time is ceremony. Omitting `to` means "the agent that spawned me".
+    it("routes to the parent when `to` is omitted", async () => {
+      const parent = fakeTransport([PARENT], { status: "sent-to-parent" });
+      const tool = sendMessageTool(["parent", [parent]]);
+
+      const out = await tool.execute("c", { message: "which base url?" }, undefined, undefined, ctx);
+
+      assert.equal(out.details.status, "sent-to-parent");
+      assert.deepEqual(parent.delivered, [[PARENT, "which base url?"]]);
+    });
+
+    it("treats a blank `to` the same as omitting it", async () => {
+      const parent = fakeTransport([PARENT], { status: "sent-to-parent" });
+      const tool = sendMessageTool(["parent", [parent]]);
+
+      const out = await tool.execute("c", { to: "   ", message: "hi" }, undefined, undefined, ctx);
+
+      assert.equal(out.details.status, "sent-to-parent");
+      assert.deepEqual(parent.delivered, [[PARENT, "hi"]]);
+    });
+
+    it("still prefers an explicit recipient over the default", async () => {
+      const parent = fakeTransport([PARENT], { status: "sent-to-parent" });
+      const child = fakeTransport(["scout-1"], { status: "steered", name: "scout-1" });
+      const tool = sendMessageTool(["parent", [parent]], ["children", [child]]);
+
+      const out = await tool.execute("c", { to: "scout-1", message: "go" }, undefined, undefined, ctx);
+
+      assert.equal(out.details.status, "steered");
+      assert.deepEqual(parent.delivered, [], "the default must not shadow an explicit name");
+    });
+
+    it("tells a top-level session who it could address instead", async () => {
+      // No parent transport: this session spawned everything and answers to nobody.
+      const child = fakeTransport(["scout-1", "worker-2"], { status: "steered", name: "scout-1" });
+      const tool = sendMessageTool(["children", [child]]);
+
+      const out = await tool.execute("c", { message: "hello?" }, undefined, undefined, ctx);
+
+      assert.equal(out.details.status, "no-default-recipient");
+      assert.deepEqual(out.details.known, ["scout-1", "worker-2"]);
+      assert.match(out.content[0].text, /scout-1, worker-2/);
+    });
+
+    it("distinguishes omitting `to` from explicitly addressing an absent parent", async () => {
+      const child = fakeTransport(["scout-1"], { status: "steered", name: "scout-1" });
+      const tool = sendMessageTool(["children", [child]]);
+
+      const omitted = await tool.execute("c", { message: "x" }, undefined, undefined, ctx);
+      const explicit = await tool.execute("c", { to: PARENT, message: "x" }, undefined, undefined, ctx);
+
+      assert.equal(omitted.details.status, "no-default-recipient");
+      assert.equal(explicit.details.status, "no-parent");
+    });
+
+    it("reports an empty message before worrying about the recipient", async () => {
+      const tool = sendMessageTool(["children", []]);
+      const out = await tool.execute("c", { message: "  " }, undefined, undefined, ctx);
+      assert.equal(out.details.status, "empty-message");
+    });
+
+    it("renders the call against the parent when no recipient is named", () => {
+      const tool = sendMessageTool(["parent", []]);
+      const rendered = tool.renderCall({ message: "hi" }, stubTheme).render(80).join("\n");
+      assert.match(rendered, new RegExp(PARENT));
     });
   });
 });

@@ -30,7 +30,7 @@ export PI_SUBAGENT_SHELL_READY_DELAY_MS=2500   # default: 500
 | Tool | Description |
 | --- | --- |
 | `subagent` | Spawn a sub-agent in a dedicated tmux pane (async) |
-| `send_message` | Message any agent in this lineage by name — `"parent"` for the one that spawned you, a sub-agent's name to steer it if running or resume it if finished |
+| `send_message` | Message any agent in this lineage — omit `to` for the one that spawned you, or name a sub-agent to steer it if running or resume it if finished |
 | `subagents_list` | List available agent definitions |
 
 There is also a `/subagent <agent> <task>` command for spawning directly.
@@ -52,12 +52,14 @@ subagent({ agent: "worker", name: "dark-mode", task: "Implement the dark mode to
 
 ### Messaging
 
-`send_message` is addressed **by name only** — one namespace covering both directions, with `"parent"` reserved for the agent that spawned you. Names are unique per session and persist after a sub-agent finishes, so the same name works either way:
+`send_message` is addressed **by name**, one namespace covering both directions. Names are unique per session and persist after a sub-agent finishes, so the same name works whether it is running or done:
 
 ```typescript
 send_message({ to: "scout", message: "Also check the auth middleware" });
-send_message({ to: "parent", message: "Should I use the v1 or v2 endpoint?" });
+send_message({ message: "Should I use the v1 or v2 endpoint?" }); // → the agent that spawned you
 ```
+
+Leaving `to` unset means the agent that spawned you, which is the only direction a sub-agent can mean without saying so. `"parent"` still works if you prefer to say it. An agent with sub-agents of its own should name the recipient: an unset `to` always goes upward, never to a child. A top-level session has no parent, so omitting `to` there is an error that lists the names it could have used.
 
 - **Running sub-agent** — the message is typed into the live pane (newlines flattened) and picked up at the next turn boundary. The call returns immediately; the eventual completion still arrives as a steer message.
 - **Finished sub-agent** — the session is resumed with the message as the follow-up task, like a fresh spawn: fire-and-forget, always autonomous, result steered back later. The resumed run reclaims its original name.
@@ -73,7 +75,7 @@ Every spawn records name → session file in `artifacts/<sessionId>/subagent-reg
 
 ### Messaging the orchestrator
 
-A sub-agent uses `send_message({ to: "parent", … })` when requirements are ambiguous or a decision materially affects the work. The session **stays open** (parked as `waiting`) instead of exiting; the parent is notified with the sub-agent's name, replies with `send_message({ to: <that name>, … })`, and the reply arrives as the sub-agent's next turn. Parallel questions are supported — each waiting sub-agent has its own name.
+A sub-agent uses `send_message({ message: … })` when requirements are ambiguous or a decision materially affects the work. The session **stays open** (parked as `waiting`) instead of exiting; the parent is notified with the sub-agent's name, replies with `send_message({ to: <that name>, … })`, and the reply arrives as the sub-agent's next turn. Parallel questions are supported — each waiting sub-agent has its own name.
 
 If the reply arrives while the sub-agent is still mid-turn, it is absorbed into the current turn — either way the question is marked answered and the session exits normally when the work is done. If the parent never replies, the pane stays open until a human closes it.
 
