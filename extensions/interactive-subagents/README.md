@@ -122,7 +122,6 @@ You are a specialized agent that does X...
 | `interactive` | boolean | Whether stall/recovery transitions wake the parent (see below) |
 | `cwd` | string | Default working directory |
 | `disable-model-invocation` | boolean | Hide from `subagents_list`; still spawnable by explicit name |
-| `cli` | string | `claude` runs the agent via the Claude Code CLI instead of pi |
 
 ### session-mode
 
