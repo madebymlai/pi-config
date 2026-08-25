@@ -1,9 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
-import { Readability } from "@mozilla/readability";
-import { parseHTML } from "linkedom";
-import TurndownService from "turndown";
+import { Defuddle } from "defuddle/node";
 
 const USER_AGENT =
 	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
@@ -14,10 +12,16 @@ const MIN_USEFUL_CONTENT = 500;
 const JINA_READER_BASE = "https://r.jina.ai/";
 const JINA_TIMEOUT_MS = 30000;
 
-const turndown = new TurndownService({
-	headingStyle: "atx",
-	codeBlockStyle: "fenced",
-});
+/**
+ * Upper bound on what reaches the model. The HTTP limits above bound the
+ * download; this bounds the context. A long man page or changelog extracts to
+ * a quarter of a million characters — roughly 60k tokens from a single tool
+ * call — which is a bigger problem than any extraction-quality difference.
+ * 48 KiB matches the allowance the subagent extension used for the same job.
+ */
+const MAX_OUTPUT_CHARS = 48 * 1024;
+const TRUNCATION_MARKER =
+	"\n\n[truncated by web_fetch — fetch a more specific URL for the rest]";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -451,11 +455,11 @@ async function extractViaHttp(
 			return { url, title, content: text, error: null };
 		}
 
-		const { document } = parseHTML(text);
-		const reader = new Readability(document as unknown as Document);
-		const article = reader.parse();
+		// Defuddle emits markdown directly, so no HTML→markdown step follows.
+		const article = await Defuddle(text, url, { markdown: true });
+		const extracted = article?.content ?? "";
 
-		if (!article) {
+		if (!extracted) {
 			const rscResult = extractRSCContent(text);
 			if (rscResult) {
 				return {
@@ -475,13 +479,11 @@ async function extractViaHttp(
 			};
 		}
 
-		const markdown = turndown.turndown(article.content);
-
-		if (markdown.length < MIN_USEFUL_CONTENT) {
+		if (extracted.length < MIN_USEFUL_CONTENT) {
 			return {
 				url,
-				title: article.title || "",
-				content: markdown,
+				title: article?.title || "",
+				content: extracted,
 				error: isLikelyJSRendered(text)
 					? "Page appears to be JavaScript-rendered (content loads dynamically)"
 					: "Extracted content appears incomplete",
@@ -490,8 +492,8 @@ async function extractViaHttp(
 
 		return {
 			url,
-			title: article.title || "",
-			content: markdown,
+			title: article?.title || "",
+			content: extracted,
 			error: null,
 		};
 	} catch (err) {
@@ -549,7 +551,7 @@ export default function (pi: ExtensionAPI) {
 		name: "web_fetch",
 		label: "Web Fetch",
 		description:
-			"Fetch a web page and extract readable content as clean markdown. Uses Readability + Turndown for high-quality HTML→markdown conversion. Handles PDFs, plain text, and falls back to Jina Reader for JS-rendered pages.",
+			"Fetch a web page and extract readable content as clean markdown. Handles PDFs, plain text, and falls back to Jina Reader for JS-rendered pages. Long pages are truncated, which the result reports — fetch a more specific URL when that happens.",
 		promptSnippet:
 			"Fetch a URL and extract readable content as markdown. Supports HTML pages, PDFs, and plain text.",
 
@@ -567,17 +569,20 @@ export default function (pi: ExtensionAPI) {
 			const header = result.title
 				? `# ${result.title}\n\nSource: ${result.url}\n\n---\n\n`
 				: "";
+			const body = header + result.content;
+			const truncated = body.length > MAX_OUTPUT_CHARS;
+			const text = truncated
+				? body.slice(0, MAX_OUTPUT_CHARS - TRUNCATION_MARKER.length) +
+					TRUNCATION_MARKER
+				: body;
+
 			return {
-				content: [
-					{
-						type: "text" as const,
-						text: header + result.content,
-					},
-				],
+				content: [{ type: "text" as const, text }],
 				details: {
 					url: result.url,
 					title: result.title,
 					chars: result.content.length,
+					truncated,
 				},
 			};
 		},
@@ -624,13 +629,15 @@ export default function (pi: ExtensionAPI) {
 			const details = result.details as {
 				title?: string;
 				chars?: number;
+				truncated?: boolean;
 			};
 
 			const title = details?.title || "Untitled";
 			const chars = details?.chars ?? 0;
 			const status =
 				theme.fg("success", title) +
-				theme.fg("muted", ` (${chars} chars)`);
+				theme.fg("muted", ` (${chars} chars)`) +
+				(details?.truncated ? theme.fg("warning", " truncated") : "");
 
 			if (!expanded) {
 				text.setText(status);
