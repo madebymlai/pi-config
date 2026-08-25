@@ -3,9 +3,7 @@ import assert from "node:assert/strict";
 import { refuseSpawn, describeRefusal, type SpawnEnvironment } from "../spawn-guard.ts";
 
 const ENV: SpawnEnvironment = {
-  currentAgent: undefined,
   permitted: () => ["scout", "worker"],
-  restricted: false,
   muxAvailable: () => true,
   hasSessionFile: () => true,
   muxUnavailableMessage: () => "tmux is required. install it.",
@@ -25,15 +23,6 @@ describe("spawn-guard.ts", () => {
   });
 
   describe("refusals", () => {
-    it("blocks an agent from spawning itself", () => {
-      const r = refuseSpawn({ agent: "worker" }, env({ currentAgent: "worker" }));
-      assert.equal(r?.status, "self-spawn");
-    });
-
-    it("allows an agent to spawn a different agent", () => {
-      assert.equal(refuseSpawn({ agent: "scout" }, env({ currentAgent: "worker" })), null);
-    });
-
     it("requires an agent to be named", () => {
       const r = refuseSpawn({}, env());
       assert.equal(r?.status, "agent-required");
@@ -85,14 +74,6 @@ describe("spawn-guard.ts", () => {
     // The order is policy: a self-spawn is reported as a self-spawn even when
     // the environment is also broken, so the caller sees the most specific
     // reason rather than whichever check happened to run first.
-    it("reports self-spawn ahead of everything else", () => {
-      const r = refuseSpawn(
-        { agent: "worker", name: "parent" },
-        env({ currentAgent: "worker", muxAvailable: () => false, hasSessionFile: () => false }),
-      );
-      assert.equal(r?.status, "self-spawn");
-    });
-
     it("reports a missing agent ahead of a reserved name", () => {
       assert.equal(refuseSpawn({ name: "parent" }, env())?.status, "agent-required");
     });
@@ -117,12 +98,6 @@ describe("spawn-guard.ts", () => {
   });
 
   describe("describeRefusal", () => {
-    it("names the agent in a self-spawn refusal", () => {
-      const { text, error } = describeRefusal({ status: "self-spawn", agent: "worker" });
-      assert.match(text, /worker/);
-      assert.equal(error, "self-spawn blocked");
-    });
-
     it("lists what may be spawned when none was named", () => {
       const { text, error } = describeRefusal({
         status: "agent-required",
@@ -137,24 +112,12 @@ describe("spawn-guard.ts", () => {
       assert.match(text, /\(none\)/);
     });
 
-    it("distinguishes an allowlist miss from an unknown agent", () => {
-      const restricted = describeRefusal({
-        status: "not-in-allowlist",
-        agent: "x",
-        permitted: ["scout"],
-      });
-      assert.match(restricted.text, /in your allowlist/);
-      assert.equal(restricted.error, "agent not in allowlist");
-
+    it("names the agent and what could be spawned instead", () => {
       const unknown = describeRefusal({ status: "unknown-agent", agent: "x", permitted: ["scout"] });
+      assert.match(unknown.text, /"x"/);
       assert.match(unknown.text, /a known agent/);
+      assert.match(unknown.text, /scout/);
       assert.equal(unknown.error, "unknown agent");
-    });
-
-    it("picks the allowlist variant only when the session is restricted", () => {
-      const pinned = refuseSpawn({ agent: "nope" }, env({ restricted: true }));
-      assert.equal(pinned?.status, "not-in-allowlist");
-      assert.equal(refuseSpawn({ agent: "nope" }, env({ restricted: false }))?.status, "unknown-agent");
     });
 
     it("explains why parent is reserved", () => {
@@ -183,9 +146,7 @@ describe("spawn-guard.ts", () => {
       let touched = 0;
       const count = <T,>(v: T) => () => { touched++; return v; };
       refuseSpawn({}, {
-        currentAgent: undefined,
         permitted: () => ["scout"],
-        restricted: false,
         muxAvailable: count(true),
         hasSessionFile: count(true),
         muxUnavailableMessage: count("hint"),
@@ -193,14 +154,16 @@ describe("spawn-guard.ts", () => {
       assert.equal(touched, 0, "environment was probed for an invalid request");
     });
 
-    it("does not discover agents to refuse a self-spawn", () => {
-      let discovered = 0;
-      refuseSpawn({ agent: "worker" }, {
-        ...ENV,
-        currentAgent: "worker",
-        permitted: () => { discovered++; return ["worker"]; },
+    it("does not probe the environment to refuse an unknown agent", () => {
+      let touched = 0;
+      const count = <T,>(v: T) => () => { touched++; return v; };
+      refuseSpawn({ agent: "nope" }, {
+        permitted: () => ["scout"],
+        muxAvailable: count(true),
+        hasSessionFile: count(true),
+        muxUnavailableMessage: count("hint"),
       });
-      assert.equal(discovered, 0, "agents were discovered for a self-spawn refusal");
+      assert.equal(touched, 0, "environment was probed for an unknown agent");
     });
   });
 });

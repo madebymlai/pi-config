@@ -26,13 +26,6 @@ export interface AgentDefaults {
   tools?: string;
   skills?: string;
   thinking?: string;
-  /**
-   * If set (non-empty), this agent is granted the full subagent spawning
-   * toolset and may only spawn the listed agents. Presence of this field —
-   * not the `tools` list — is what grants spawning. Enforced in the child via
-   * the PI_SUBAGENT_ALLOWED env var.
-   */
-  subagentAgents?: string[];
   autoExit?: boolean;
   interactive?: boolean;
   systemPromptMode?: "append" | "replace";
@@ -70,18 +63,6 @@ function getBundledAgentsDir(): string {
   return join(SUBAGENTS_DIR, "agents");
 }
 
-/**
- * When this process was spawned as a restricted subagent, the parent pins the
- * set of agents it may itself spawn via PI_SUBAGENT_ALLOWED. `null` means no
- * restriction (top-level session, or an unrestricted child).
- */
-export const SUBAGENT_ALLOWLIST = (() => {
-  const raw = process.env.PI_SUBAGENT_ALLOWED;
-  if (!raw) return null;
-  const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
-  return list.length > 0 ? new Set(list) : null;
-})();
-
 function getFrontmatterValue(frontmatter: string, key: string): string | undefined {
   const match = frontmatter.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
   return match ? match[1].trim() : undefined;
@@ -89,12 +70,6 @@ function getFrontmatterValue(frontmatter: string, key: string): string | undefin
 
 function parseOptionalBoolean(value: string | undefined): boolean | undefined {
   return value != null ? value === "true" : undefined;
-}
-
-function parseCommaList(value: string | undefined): string[] | undefined {
-  if (value == null) return undefined;
-  const list = value.split(",").map((s) => s.trim()).filter(Boolean);
-  return list.length > 0 ? list : undefined;
 }
 
 function parseSessionMode(value: string | undefined): SubagentSessionMode | undefined {
@@ -125,7 +100,6 @@ function parseAgentDefinition(content: string, fallbackName: string): AgentDefin
           : undefined,
     skills: getFrontmatterValue(frontmatter, "skill") ?? getFrontmatterValue(frontmatter, "skills"),
     thinking: getFrontmatterValue(frontmatter, "thinking"),
-    subagentAgents: parseCommaList(getFrontmatterValue(frontmatter, "subagent_agents")),
     autoExit: parseOptionalBoolean(getFrontmatterValue(frontmatter, "auto-exit")),
     interactive: parseOptionalBoolean(getFrontmatterValue(frontmatter, "interactive")),
     sessionMode: parseSessionMode(getFrontmatterValue(frontmatter, "session-mode")),
@@ -137,8 +111,9 @@ function parseAgentDefinition(content: string, fallbackName: string): AgentDefin
 }
 
 /**
- * Every agent this session may spawn, project tier shadowing global shadowing
- * bundled. A restricted subagent sees only the agents it was pinned to.
+ * Every agent that can be spawned, project tier shadowing global shadowing
+ * bundled. Only the top-level session spawns, so there is nothing to narrow
+ * this by.
  */
 export function listAgents() {
   const agents = new Map<string, ListedAgentDefinition>();
@@ -160,10 +135,7 @@ export function listAgents() {
     }
   }
 
-  // When this process is itself a restricted subagent, only expose the agents
-  // it is permitted to spawn (PI_SUBAGENT_ALLOWED). Top-level sessions see all.
-  const all = [...agents.values()];
-  return SUBAGENT_ALLOWLIST ? all.filter((a) => SUBAGENT_ALLOWLIST.has(a.name)) : all;
+  return [...agents.values()];
 }
 
 function loadAgentDefaults(agentName: string): AgentDefaults | null {

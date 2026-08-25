@@ -59,19 +59,19 @@ send_message({ to: "scout", message: "Also check the auth middleware" });
 send_message({ message: "Should I use the v1 or v2 endpoint?" }); // → the agent that spawned you
 ```
 
-Leaving `to` unset means the agent that spawned you, which is the only direction a sub-agent can mean without saying so. `"parent"` still works if you prefer to say it. An agent with sub-agents of its own should name the recipient: an unset `to` always goes upward, never to a child. A top-level session has no parent, so omitting `to` there is an error that lists the names it could have used.
+Leaving `to` unset means the agent that spawned you — the only direction a sub-agent can mean, since sub-agents have no children of their own. `"parent"` still works if you prefer to say it. A top-level session has no parent, so omitting `to` there is an error that lists the names it could have used instead.
 
 - **Running sub-agent** — the message is typed into the live pane (newlines flattened) and picked up at the next turn boundary. The call returns immediately; the eventual completion still arrives as a steer message.
 - **Finished sub-agent** — the session is resumed with the message as the follow-up task, like a fresh spawn: fire-and-forget, always autonomous, result steered back later. The resumed run reclaims its original name.
 - **`"parent"`** — see [Messaging the orchestrator](#messaging-the-orchestrator) below. Available only inside a sub-agent session; a top-level session is told it has no parent.
 
-The recipient is always required. There is no default direction, so a message can never silently reach the wrong agent — and because `"parent"` is reserved, no sub-agent can be spawned under a name that would shadow it.
+Because `"parent"` is reserved, no sub-agent can be spawned under a name that would shadow it.
 
-Which recipients a session can reach follows from which extensions it loads, not from a runtime check: a top-level session reaches its children, a leaf sub-agent reaches its parent, and a sub-agent that can itself spawn reaches both through the same tool.
+Which recipients a session can reach follows from which extensions it loads, not from a runtime check: the top-level session reaches its children, and a sub-agent reaches its parent.
 
-Every spawn records name → session file in `artifacts/<sessionId>/subagent-registry.json`, so names stay addressable across pi restarts. A nested sub-agent that spawns children gets its own registry keyed by its own session id. Resume is refused with a clear error (listing known names) if the name isn't registered, the session file is gone, or the session predates sandboxed resume.
+Every spawn records name → session file in `artifacts/<sessionId>/subagent-registry.json`, so names stay addressable across pi restarts. Resume is refused with a clear error (listing known names) if the name isn't registered, the session file is gone, or the session predates sandboxed resume.
 
-**Resume replays the original sandbox.** At spawn time the fully-resolved loadout — tool allowlist, backing extensions, model, thinking level, system prompt, spawn whitelist, cwd — is snapshotted to `<session>.loadout.json`. Resume rebuilds the exact same restricted process from that snapshot rather than relaunching unrestricted.
+**Resume replays the original sandbox.** At spawn time the fully-resolved loadout — tool allowlist, backing extensions, model, thinking level, system prompt, cwd — is snapshotted to `<session>.loadout.json`. Resume rebuilds the exact same restricted process from that snapshot rather than relaunching unrestricted.
 
 ### Messaging the orchestrator
 
@@ -85,7 +85,7 @@ If the reply arrives while the sub-agent is still mid-turn, it is absorbed into 
 | ----- | ----- | ----- | ---- |
 | **scout** | `openrouter/z-ai/glm-5.3` | `read`, `grep`, `find`, `ls` | Fast read-only codebase recon |
 | **researcher** | `openrouter/z-ai/glm-5.3` | `web_search`, `web_fetch`, `safe_bash` | Web research, synthesized into a sourced brief |
-| **worker** | `openrouter/z-ai/glm-5.3` | `read`, `write`, `edit`, `bash`, `web_search`, `web_fetch` + spawning | General implementer; may spawn `scout` and `researcher` |
+| **worker** | `openrouter/z-ai/glm-5.3` | `read`, `write`, `edit`, `bash`, `web_search`, `web_fetch` | General implementer |
 
 All three are autonomous (`auto-exit: true`) and carry their identity in the system prompt (`system-prompt: append`).
 
@@ -116,7 +116,6 @@ You are a specialized agent that does X...
 | `model` | string | Default model |
 | `thinking` | string | `minimal`, `low`, `medium`, or `high` |
 | `tools` | string | Strict tool allowlist. Built-ins: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`. Extension-backed: `web_search`, `web_fetch`, `safe_bash`, `video_extract`, `youtube_search`, `google_image_search`. Only the extensions backing the listed tools are loaded into the child |
-| `subagent_agents` | string | Comma-separated agent names this agent may spawn. **Presence of this field grants the spawning toolset** (`subagent`, `subagents_list`) and restricts spawn targets to the list. Omit it and the agent cannot spawn at all |
 | `skills` | string | Comma-separated skill names to auto-load |
 | `session-mode` | string | `standalone` (default), `lineage-only`, or `fork` — see below |
 | `system-prompt` | string | `append` or `replace`: pass the body as the child's `--append-system-prompt` / `--system-prompt`. Omit and the body is prepended to the task prompt instead |
@@ -148,7 +147,7 @@ Controls whether `stalled`/`recovered` status transitions send a steer message t
 
 Access is **whitelist-only**. Every sub-agent process is launched with `--no-extensions` (extension discovery disabled) and `--tools <allowlist>`; only the extensions backing the listed tools are loaded back in explicitly. There is no default toolset and no deny-list — an agent gets exactly what its frontmatter lists. The restriction survives resume via the loadout snapshot.
 
-Spawns must name a known agent at **every** depth. A top-level session may spawn anything discoverable; a sub-agent may only spawn the agents in its `subagent_agents` list (enforced via `PI_SUBAGENT_ALLOWED`). There is no agentless spawn route, so a child can never escalate to a full-toolset profile by omitting its agent.
+Only the top-level session spawns. Sub-agents are leaves: they are never granted `subagent` or `subagents_list`, so the hierarchy is exactly one level deep and there is no allowlist to propagate. Every spawn must name a known agent — there is no agentless route, so a child can never escalate to a full-toolset profile by omitting its agent.
 
 ## Role folders
 

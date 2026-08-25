@@ -27,7 +27,6 @@ import {
   listAgents,
   resolveAgentLaunch,
   RESUME_LAUNCH,
-  SUBAGENT_ALLOWLIST,
   type AgentDefaults,
 } from "./agents.ts";
 import {
@@ -262,8 +261,6 @@ const runningSubagents = new Map<string, RunningSubagent>();
 // flight — so it can suppress auto-exit and keep the session open until they all
 // report back. Expose a live count through a process-global symbol that both
 // modules share. (subagent-done.ts reads it; if absent it assumes zero.)
-const RUNNING_CHILDREN_COUNT_KEY = Symbol.for("pi-subagents/running-children-count");
-(globalThis as any)[RUNNING_CHILDREN_COUNT_KEY] = () => runningSubagents.size;
 
 // ── Widget management ──
 
@@ -535,8 +532,6 @@ async function launchSubagent(
     ? "Your FINAL assistant message should summarize what you accomplished."
     : "Your FINAL assistant message (before the user exits) should summarize what you accomplished.";
   // An agent with a non-empty subagent_agents list is granted the spawning
-  // toolset and may only spawn the listed agents (enforced via PI_SUBAGENT_ALLOWED).
-  const grantSpawning = !!(agentDefs?.subagentAgents && agentDefs.subagentAgents.length > 0);
   const identity = agentDefs?.body ?? null;
   const systemPromptMode = agentDefs?.systemPromptMode;
   const identityInSystemPrompt = systemPromptMode && identity;
@@ -564,7 +559,7 @@ async function launchSubagent(
   // spawning toolset), we disable global extension discovery and re-enable only
   // the extensions backing the whitelisted tools. Bare/fork spawns with no tool
   // restriction keep their full default toolset and all global extensions.
-  const toolAllowlist = computeToolAllowlist(effectiveTools, { grantSpawning });
+  const toolAllowlist = computeToolAllowlist(effectiveTools);
 
   // Snapshot the fully-resolved sandbox beside the session file so a later
   // `send_message({ to })` resume can replay the exact same
@@ -576,7 +571,6 @@ async function launchSubagent(
     thinking: effectiveThinking ?? null,
     systemPromptMode: systemPromptMode ?? null,
     identity: identityInSystemPrompt ? identity : null,
-    spawnable: agentDefs?.subagentAgents ?? null,
     autoExit: launchBehavior.autoExit,
     cwd: effectiveCwd ?? null,
     agentDir: resolvedAgentDir,
@@ -594,9 +588,6 @@ async function launchSubagent(
     envParts.push(`PI_CODING_AGENT_DIR=${shellEscape(resolvedAgentDir)}`);
   }
 
-  if (grantSpawning && agentDefs?.subagentAgents) {
-    envParts.push(`PI_SUBAGENT_ALLOWED=${shellEscape(agentDefs.subagentAgents.join(","))}`);
-  }
   envParts.push(`PI_SUBAGENT_NAME=${shellEscape(params.name)}`);
   if (params.agent) {
     envParts.push(`PI_SUBAGENT_AGENT=${shellEscape(params.agent)}`);
@@ -1034,9 +1025,6 @@ function createChildTransports(
       if (resumeAgentDir) {
         resumeEnvParts.push(`PI_CODING_AGENT_DIR=${shellEscape(resumeAgentDir)}`);
       }
-      if (loadout.spawnable && loadout.spawnable.length > 0) {
-        resumeEnvParts.push(`PI_SUBAGENT_ALLOWED=${shellEscape(loadout.spawnable.join(","))}`);
-      }
       if (loadout.agent) {
         resumeEnvParts.push(`PI_SUBAGENT_AGENT=${shellEscape(loadout.agent)}`);
       }
@@ -1128,10 +1116,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         // Every reason a spawn may be refused, in one ordered decision. The
         // environment is resolved here because refuseSpawn reads nothing itself.
         const refusal = refuseSpawn(params, {
-          currentAgent: process.env.PI_SUBAGENT_AGENT,
-          permitted: () =>
-            SUBAGENT_ALLOWLIST ? [...SUBAGENT_ALLOWLIST] : listAgents().map((a) => a.name),
-          restricted: !!SUBAGENT_ALLOWLIST,
+          permitted: () => listAgents().map((a) => a.name),
           muxAvailable: isMuxAvailable,
           hasSessionFile: () => !!ctx.sessionManager.getSessionFile(),
           muxUnavailableMessage,

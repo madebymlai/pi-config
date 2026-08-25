@@ -23,31 +23,6 @@ export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
   return agentStarted;
 }
 
-/**
- * Number of child subagents this session itself still has in flight.
- *
- * When this extension is loaded inside a subagent that can spawn its own
- * children (e.g. a worker delegating to scout/researcher), `index.ts` runs in
- * the same process and publishes a live count through a shared process-global
- * symbol. A subagent that spawns children and then writes a "waiting for
- * results" message would otherwise auto-exit the instant that turn ends —
- * killing the session before its children report back. Reading this count lets
- * `agent_end` keep the session open until every child has finished and its
- * result has been delivered.
- *
- * Returns 0 when the spawning tools aren't loaded (scout/researcher, or a
- * standalone session), so those agents auto-exit exactly as before.
- */
-export function runningChildrenCount(): number {
-  const fn = (globalThis as any)[Symbol.for("pi-subagents/running-children-count")];
-  if (typeof fn !== "function") return 0;
-  try {
-    const n = fn();
-    return typeof n === "number" && n > 0 ? n : 0;
-  } catch {
-    return 0;
-  }
-}
 
 export function shouldAutoExitOnAgentEnd(
   _userTookOver: boolean,
@@ -226,17 +201,10 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_end", (event, ctx) => {
     const messages = (event as any).messages as any[] | undefined;
-    // Never shut down while this session still has work in flight:
-    //  - awaitingReply: a message is pending the orchestrator's reply.
-    //  - runningChildrenCount(): this subagent spawned its own children and is
-    //    waiting for their results (delivered as steered turns). Exiting now
-    //    would strand those children and drop their results.
-    // In both cases the session parks as `waiting` and resumes when the next
-    // turn lands.
-    const hasPendingChildren = runningChildrenCount() > 0;
+    // Never shut down while a message is pending the orchestrator's reply: the
+    // session parks as `waiting` and resumes when the reply lands.
     const shouldExit =
       !awaitingReply &&
-      !hasPendingChildren &&
       autoExit &&
       shouldAutoExitOnAgentEnd(userTookOver, messages);
 

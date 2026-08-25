@@ -102,8 +102,6 @@ export interface SubagentLoadout {
   systemPromptMode: "append" | "replace" | null;
   /** The system-prompt/identity text, only when it lived in the system prompt. */
   identity: string | null;
-  /** Agents this subagent was allowed to spawn (for PI_SUBAGENT_ALLOWED). */
-  spawnable: string[] | null;
   /** Whether the agent auto-exits (informational; resume forces autonomous). */
   autoExit: boolean;
   /** Working directory the subagent ran in, or null. */

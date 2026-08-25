@@ -57,7 +57,6 @@ import {
   shouldMarkUserTookOver,
   shouldAutoExitOnAgentEnd,
   findLatestAssistantError,
-  runningChildrenCount,
 } from "../subagent-done.ts";
 import subagentDoneExtension from "../subagent-done.ts";
 import { registerSendMessage, __test__ as messagingTestApi } from "../messaging.ts";
@@ -210,7 +209,6 @@ describe("session.ts", () => {
       thinking: "medium",
       systemPromptMode: "append",
       identity: "You are a worker agent.",
-      spawnable: ["scout", "researcher"],
       autoExit: true,
       cwd: "/work/dir",
       agentDir: "/home/u/.pi/agent",
@@ -945,28 +943,13 @@ describe("subagent discovery", () => {
     }
   });
 
-  it("worker is granted the spawning toolset restricted to scout and researcher", () => {
-    const worker = resolveAgentLaunch("worker").defs;
-    assert.ok(worker, "expected bundled worker to be discoverable");
-    assert.deepEqual(worker.subagentAgents, ["scout", "researcher"]);
-
-    const allowlist = computeToolAllowlist(worker.tools, { grantSpawning: true });
-    assert.ok(allowlist, "expected an allowlist");
-    const tools = new Set(allowlist!.split(","));
-    for (const t of ["subagent", "subagents_list"]) {
-      assert.ok(tools.has(t), `expected spawning tool ${t} in worker allowlist`);
-    }
-    assert.ok(tools.has("send_message"), "expected worker to keep send_message");
-    assert.ok(tools.has("bash"), "expected worker to keep bash");
-  });
-
   it("every graph tool a bundled role grants resolves to a backing extension", () => {
     // A tool named in --tools but backed by no -e silently does not exist in
     // the child, so a grant without a mapping is worse than no grant at all.
     for (const name of ["scout", "worker"]) {
       const defs = resolveAgentLaunch(name).defs;
       assert.ok(defs, `expected bundled agent ${name} to be discoverable`);
-      const allowlist = computeToolAllowlist(defs!.tools, { grantSpawning: false });
+      const allowlist = computeToolAllowlist(defs!.tools);
       assert.ok(allowlist, `expected ${name} to restrict tools`);
       for (const tool of allowlist!.split(",")) {
         if (["read", "write", "edit", "bash", "grep", "find", "ls", "send_message"].includes(tool)) continue;
@@ -978,11 +961,16 @@ describe("subagent discovery", () => {
     }
   });
 
-  it("scout and researcher are not granted spawning tools", () => {
-    for (const name of ["scout", "researcher"]) {
+  it("no bundled role is granted the spawning tools", () => {
+    // Only the top-level session spawns. A role's allowlist must never contain
+    // them, and there is no frontmatter field that could ask for them.
+    for (const name of ["scout", "researcher", "worker"]) {
       const defs = resolveAgentLaunch(name).defs;
       assert.ok(defs, `expected bundled agent ${name} to be discoverable`);
-      assert.equal(defs!.subagentAgents, undefined, `${name} should not declare subagent_agents`);
+      const tools = new Set((computeToolAllowlist(defs!.tools) ?? "").split(","));
+      for (const spawning of ["subagent", "subagents_list"]) {
+        assert.ok(!tools.has(spawning), `${name} must not be granted ${spawning}`);
+      }
     }
   });
 
@@ -991,8 +979,8 @@ describe("subagent discovery", () => {
     assert.equal(getToolExtensionPath("bash"), undefined);
     assert.ok(getToolExtensionPath("web_search")?.endsWith("web-search/index.ts"));
     assert.ok(getToolExtensionPath("safe_bash")?.endsWith("tools/safe-bash.ts"));
-    // Spawning tools are registered by this extension itself.
-    assert.ok(getToolExtensionPath("subagent")?.endsWith("index.ts"));
+    // No child is ever granted the spawning tools, so nothing backs them.
+    assert.equal(getToolExtensionPath("subagent"), undefined);
     // The knowledge-graph tools all come from one flat file in the agent dir.
     assert.ok(getToolExtensionPath("search_graph")?.endsWith("cbmem.ts"));
     assert.ok(getToolExtensionPath("trace_path")?.endsWith("cbmem.ts"));
@@ -1200,37 +1188,6 @@ describe("subagent-done.ts", () => {
     });
   });
 
-  describe("runningChildrenCount", () => {
-    const KEY = Symbol.for("pi-subagents/running-children-count");
-    function withGlobal(value: unknown, run: () => void) {
-      const prev = (globalThis as any)[KEY];
-      (globalThis as any)[KEY] = value;
-      try {
-        run();
-      } finally {
-        (globalThis as any)[KEY] = prev;
-      }
-    }
-
-    it("returns 0 when the spawning tools aren't loaded (no global)", () => {
-      withGlobal(undefined, () => {
-        assert.equal(runningChildrenCount(), 0);
-      });
-    });
-
-    it("reflects the live child count published by index.ts", () => {
-      withGlobal(() => 3, () => {
-        assert.equal(runningChildrenCount(), 3);
-      });
-    });
-
-    it("treats zero/negative/non-number/throwing getters as 0", () => {
-      withGlobal(() => 0, () => assert.equal(runningChildrenCount(), 0));
-      withGlobal(() => -1, () => assert.equal(runningChildrenCount(), 0));
-      withGlobal(() => "two", () => assert.equal(runningChildrenCount(), 0));
-      withGlobal(() => { throw new Error("boom"); }, () => assert.equal(runningChildrenCount(), 0));
-    });
-  });
 
   describe("send_message (parent transport)", () => {
     function setupSubagentExtension(sessionFile: string) {

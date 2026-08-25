@@ -25,16 +25,6 @@ const EXTENSION_DIR = dirname(fileURLToPath(import.meta.url));
 const SIBLING_EXTENSIONS_DIR = resolve(EXTENSION_DIR, "..");
 
 /**
- * Tools registered by index.ts. Granting any of them is what pulls the
- * orchestration extension into a child, which is why `send_message` is
- * deliberately NOT here: every subagent gets it, and mapping it to that file
- * would load the whole extension — widget, watchers, status timers — into every
- * leaf. It lives in SUBAGENT_CONTROL_TOOLS instead, backed by subagent-done.ts,
- * which every subagent already loads.
- */
-export const SPAWNING_TOOLS = ["subagent", "subagents_list"] as const;
-
-/**
  * Tools every subagent keeps regardless of how tightly its role restricts tools.
  * Backed by subagent-done.ts, which is loaded into every subagent session, so
  * granting these never widens which extensions a child loads.
@@ -93,11 +83,6 @@ export function slugify(name: string, fallback = "subagent") {
  */
 export function getToolExtensionPath(tool: string): string | undefined {
   if (BUILTIN_TOOLS.has(tool)) return undefined;
-  // The spawning tools are registered by index.ts. Naming it explicitly rather
-  // than using import.meta.url, which would resolve to this file instead.
-  if ((SPAWNING_TOOLS as readonly string[]).includes(tool)) {
-    return join(EXTENSION_DIR, "index.ts");
-  }
   if (tool === "safe_bash") {
     const safeBash = join(EXTENSION_DIR, "tools", "safe-bash.ts");
     return existsSync(safeBash) ? safeBash : undefined;
@@ -134,26 +119,19 @@ export function getToolExtensionPath(tool: string): string | undefined {
  * pi applies `--tools` to built-in, extension and custom tools alike, so a role
  * that restricts itself to e.g. "read,bash,write" would otherwise hide the
  * control tools and leave a resumed or user-touched subagent unable to call
- * send_message. Those are added unconditionally; the spawning tools only on an
- * explicit grant.
+ * send_message. Those are added unconditionally.
  */
-export function computeToolAllowlist(
-  effectiveTools: string | undefined,
-  opts: { grantSpawning: boolean },
-) {
+export function computeToolAllowlist(effectiveTools: string | undefined) {
   const requested = (effectiveTools ?? "")
     .split(",")
     .map((tool) => tool.trim())
     .filter(Boolean);
 
-  // No explicit tool restriction and no spawning grant → don't pass --tools at
-  // all (the child keeps its default toolset).
-  if (requested.length === 0 && !opts.grantSpawning) return null;
+  // No explicit tool restriction → don't pass --tools at all (the child keeps
+  // its default toolset).
+  if (requested.length === 0) return null;
 
   const allow = new Set(requested);
-  if (opts.grantSpawning) {
-    for (const tool of SPAWNING_TOOLS) allow.add(tool);
-  }
   for (const tool of SUBAGENT_CONTROL_TOOLS) {
     allow.add(tool);
   }
@@ -166,9 +144,8 @@ export function computeToolAllowlist(
  * identity (written to a file under `artifactDir/context`), and the
  * default-deny tool/extension restriction.
  *
- * Env vars (PI_SUBAGENT_AGENT / PI_SUBAGENT_ALLOWED / PI_CODING_AGENT_DIR) and
- * cwd stay the caller's responsibility, since they differ between launch and
- * resume. A null `toolAllowlist` means the spawn was intentionally unrestricted
+ * Env vars (PI_SUBAGENT_AGENT / PI_CODING_AGENT_DIR) and cwd stay the caller's
+ * responsibility, since they differ between launch and resume. A null `toolAllowlist` means the spawn was intentionally unrestricted
  * (e.g. a fork clone) and is replayed as-is.
  */
 export function sandboxArgs(

@@ -9,7 +9,6 @@ import {
   promptArgs,
   getToolExtensionPath,
   slugify,
-  SPAWNING_TOOLS,
   SUBAGENT_CONTROL_TOOLS,
 } from "../sandbox.ts";
 import type { SubagentLoadout } from "../session.ts";
@@ -41,12 +40,12 @@ const loadout = (over: Partial<SubagentLoadout> = {}): SubagentLoadout => ({ ...
 describe("sandbox.ts", () => {
   describe("computeToolAllowlist", () => {
     it("passes no allowlist at all when nothing is restricted or granted", () => {
-      assert.equal(computeToolAllowlist(undefined, { grantSpawning: false }), null);
-      assert.equal(computeToolAllowlist("", { grantSpawning: false }), null);
+      assert.equal(computeToolAllowlist(undefined), null);
+      assert.equal(computeToolAllowlist(""), null);
     });
 
     it("keeps requested tools and always adds the control tools", () => {
-      const allow = computeToolAllowlist("read,bash", { grantSpawning: false });
+      const allow = computeToolAllowlist("read,bash");
       assert.ok(allow);
       const tools = allow!.split(",");
       assert.ok(tools.includes("read"));
@@ -56,24 +55,9 @@ describe("sandbox.ts", () => {
       }
     });
 
-    it("adds the spawning tools only when spawning is granted", () => {
-      const without = computeToolAllowlist("read", { grantSpawning: false })!.split(",");
-      const with_ = computeToolAllowlist("read", { grantSpawning: true })!.split(",");
-      for (const tool of SPAWNING_TOOLS) {
-        assert.ok(!without.includes(tool), `${tool} must not leak without a grant`);
-        assert.ok(with_.includes(tool));
-      }
-    });
-
-    it("grants spawning even with no requested tools", () => {
-      const allow = computeToolAllowlist(undefined, { grantSpawning: true });
-      assert.ok(allow);
-      for (const tool of SPAWNING_TOOLS) assert.ok(allow!.split(",").includes(tool));
-    });
-
-    it("does not repeat a tool that was requested and also granted", () => {
-      const tools = computeToolAllowlist("subagent,read", { grantSpawning: true })!.split(",");
-      assert.equal(tools.filter((t) => t === "subagent").length, 1);
+    it("does not repeat a tool that was requested and is also always granted", () => {
+      const tools = computeToolAllowlist("send_message,read")!.split(",");
+      assert.equal(tools.filter((t) => t === "send_message").length, 1);
     });
   });
 
@@ -168,12 +152,6 @@ describe("sandbox.ts", () => {
       assert.equal(getToolExtensionPath("no_such_tool"), undefined);
     });
 
-    it("backs the spawning tools with index.ts, not with sandbox.ts", () => {
-      for (const tool of SPAWNING_TOOLS) {
-        const path = getToolExtensionPath(tool);
-        assert.ok(path?.endsWith("/index.ts"), `${tool} resolved to ${path}`);
-      }
-    });
   });
 
   describe("promptArgs", () => {
