@@ -199,43 +199,6 @@ function getAgentConfigDir(): string {
   return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
 }
 
-// ── Runtime tool-extension registration ─────────────────────────────────────
-// `getToolExtensionPath` otherwise only knows a closed set of tool names. Other
-// pi extensions that bundle a tool for subagents (e.g. a project-local
-// extension exposing a bespoke tool) register its name → extension-file path
-// here at load/session_start time so a child process can be launched with
-// `--no-extensions` + an explicit `-e <path>` for it. Mirrors the legacy
-// `subagents` extension's `registerToolExtension` hook.
-const EXTRA_TOOL_EXTENSIONS = new Map<string, string>();
-
-/** Register (or re-register) a custom tool's backing extension file. */
-export function registerToolExtension(name: string, extensionPath: string): void {
-  if (BUILTIN_TOOLS.has(name)) {
-    throw new Error(`Cannot register custom tool "${name}": shadows a built-in pi tool`);
-  }
-  if ((SPAWNING_TOOLS as readonly string[]).includes(name)) {
-    throw new Error(`Cannot register custom tool "${name}": shadows a spawning tool`);
-  }
-  if ((SUBAGENT_CONTROL_TOOLS as readonly string[]).includes(name)) {
-    throw new Error(`Cannot register custom tool "${name}": shadows a subagent control tool`);
-  }
-  const existing = EXTRA_TOOL_EXTENSIONS.get(name);
-  if (existing === extensionPath) return; // idempotent / reload-safe
-  if (existing !== undefined) {
-    throw new Error(
-      `Tool extension already registered for "${name}": ${existing} (refusing to overwrite with ${extensionPath})`,
-    );
-  }
-  EXTRA_TOOL_EXTENSIONS.set(name, extensionPath);
-}
-
-// Expose registration on a process-global so project-local extensions loaded
-// via jiti (separate module instances) can reach this shared map. Set at module
-// load so it's available before any `session_start` listener runs.
-(globalThis as any).__pi_interactive_subagents = {
-  registerToolExtension,
-};
-
 /**
  * Map a custom (non-built-in) tool name to the pi-extension file that
  * registers it. Used to build the child's `--extension` whitelist after
@@ -250,7 +213,7 @@ function getToolExtensionPath(tool: string): string | undefined {
   }
   if (tool === "safe_bash") {
     const safeBash = join(SUBAGENTS_DIR, "tools", "safe-bash.ts");
-    return existsSync(safeBash) ? safeBash : EXTRA_TOOL_EXTENSIONS.get(tool);
+    return existsSync(safeBash) ? safeBash : undefined;
   }
   const map: Record<string, readonly string[]> = {
     web_search: ["web-search", "index.ts"],
@@ -267,8 +230,7 @@ function getToolExtensionPath(tool: string): string | undefined {
   };
   // This extension is not necessarily installed under ~/.pi/agent. When it is
   // vendored into a config repo the extensions backing these tools sit beside
-  // it, so look where this file actually lives before the agent dir. Either way
-  // an absent path falls through to a runtime-registered extension.
+  // it, so look where this file actually lives before the agent dir.
   const segments = map[tool];
   if (segments) {
     for (const base of [SIBLING_EXTENSIONS_DIR, join(getAgentConfigDir(), "extensions")]) {
@@ -276,7 +238,7 @@ function getToolExtensionPath(tool: string): string | undefined {
       if (existsSync(candidate)) return candidate;
     }
   }
-  return EXTRA_TOOL_EXTENSIONS.get(tool);
+  return undefined;
 }
 
 /**
