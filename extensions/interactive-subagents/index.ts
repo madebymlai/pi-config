@@ -14,6 +14,7 @@ import {
 import { renderSubagentWidget } from "./widget.ts";
 import {
   describeResult,
+  fallbackSummary,
   formatElapsed,
   stripResultPreamble,
   usageSegments,
@@ -838,24 +839,11 @@ async function watchSubagent(
 
     const elapsed = Math.floor((Date.now() - startTime) / 1000);
 
-    // Pi subagent result extraction
-    let summary: string;
-    if (existsSync(sessionFile)) {
-      const allEntries = getNewEntries(sessionFile, fromEntry);
-      summary =
-        findLastAssistantMessage(allEntries) ??
-        (result.errorMessage
-          ? `Subagent error: ${result.errorMessage}`
-          : result.exitCode !== 0
-            ? `Sub-agent exited with code ${result.exitCode}`
-            : "Sub-agent exited without output");
-    } else {
-      summary = result.errorMessage
-        ? `Subagent error: ${result.errorMessage}`
-        : result.exitCode !== 0
-          ? `Sub-agent exited with code ${result.exitCode}`
-          : "Sub-agent exited without output";
-    }
+    // The subagent's own last word, or a stand-in describing how it ended.
+    const summary =
+      (existsSync(sessionFile)
+        ? findLastAssistantMessage(getNewEntries(sessionFile, fromEntry))
+        : null) ?? fallbackSummary(result);
 
     const stats = existsSync(sessionFile) ? summarizeSessionStats(sessionFile) : null;
     const subagentSessionId = existsSync(sessionFile) ? getSessionId(sessionFile) : null;

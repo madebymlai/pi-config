@@ -91,13 +91,30 @@ export function usageSegments(stats: SessionStats) {
   return segs;
 }
 
-/** What `describeResult` needs to know about a finished run. */
-export interface FinishedRun {
+/** How a run ended. Both summary functions rank these two fields the same way. */
+export interface RunOutcome {
   exitCode: number;
-  elapsed: number;
-  summary: string;
   /** Provider/agent error when auto-retry was exhausted (overload, rate limit…). */
   errorMessage?: string;
+}
+
+/** What `describeResult` needs to know about a finished run. */
+export interface FinishedRun extends RunOutcome {
+  elapsed: number;
+  summary: string;
+}
+
+/**
+ * What a run is said to have produced when it left no assistant message to
+ * quote — it crashed, wrote nothing, or failed before its first turn.
+ *
+ * A provider error outranks the exit code here for the same reason it does in
+ * `describeResult`: "exited with code 1" hides why.
+ */
+export function fallbackSummary(outcome: RunOutcome) {
+  if (outcome.errorMessage) return `Subagent error: ${outcome.errorMessage}`;
+  if (outcome.exitCode !== 0) return `Sub-agent exited with code ${outcome.exitCode}`;
+  return "Sub-agent exited without output";
 }
 
 /**

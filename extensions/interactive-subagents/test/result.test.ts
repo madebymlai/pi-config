@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  fallbackSummary,
   formatElapsed,
   describeResult,
   stripResultPreamble,
@@ -169,6 +170,32 @@ describe("result.ts", () => {
       assert.equal(
         stripResultPreamble(text, { name: "w", elapsedText: "1m 5s", exitCode: 0 }),
         text,
+      );
+    });
+  });
+
+  describe("fallbackSummary", () => {
+    // Used when a run left no assistant message to quote — a crash, an empty
+    // session file, or a provider failure before the first turn.
+    it("reports a provider error ahead of the exit code", () => {
+      assert.equal(
+        fallbackSummary({ exitCode: 1, errorMessage: "overloaded" }),
+        "Subagent error: overloaded",
+      );
+    });
+
+    it("reports a non-zero exit when there is no error message", () => {
+      assert.equal(fallbackSummary({ exitCode: 137 }), "Sub-agent exited with code 137");
+    });
+
+    it("reports a clean exit that produced nothing", () => {
+      assert.equal(fallbackSummary({ exitCode: 0 }), "Sub-agent exited without output");
+    });
+
+    it("ranks the error above a clean exit too", () => {
+      assert.equal(
+        fallbackSummary({ exitCode: 0, errorMessage: "boom" }),
+        "Subagent error: boom",
       );
     });
   });
