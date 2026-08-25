@@ -42,7 +42,6 @@ type StatusObservation =
       updatedAt: number;
       sequence: number;
       phase: StatusActivityPhase;
-      active?: boolean;
       activeScope?: string;
       activeSince?: number;
       waitingSince?: number;
@@ -61,7 +60,6 @@ interface SubagentStatusState {
   lastActivitySequence: number | null;
   localOverrideAtMs: number | null;
   localOverrideSequence: number | null;
-  activeNow: boolean;
   activeSinceMs: number | null;
   activeScope: string | null;
   waitingSinceMs: number | null;
@@ -112,7 +110,6 @@ function createStatusState(params: { startTimeMs: number }): SubagentStatusState
     lastActivitySequence: null,
     localOverrideAtMs: null,
     localOverrideSequence: null,
-    activeNow: false,
     activeSinceMs: null,
     activeScope: null,
     waitingSinceMs: null,
@@ -159,8 +156,8 @@ function observeStatus(
   if (blockedByLocalOverride) return state;
 
   const phase = observation.phase;
-  const activeNow = phase === "active" || observation.active === true;
-  const activeSinceMs = activeNow
+  const isActive = phase === "active";
+  const activeSinceMs = isActive
     ? observation.activeSince ?? state.activeSinceMs ?? updatedAt
     : null;
   const waitingSinceMs = phase === "waiting"
@@ -172,9 +169,8 @@ function observeStatus(
     firstObservationAtMs: state.firstObservationAtMs ?? now,
     lastActivityAtMs: updatedAt,
     lastActivitySequence: sequence,
-    activeNow,
     activeSinceMs,
-    activeScope: activeNow ? observation.activeScope ?? null : null,
+    activeScope: isActive ? observation.activeScope ?? null : null,
     waitingSinceMs,
     phase,
     latestEvent: observation.latestEvent ?? null,
@@ -204,7 +200,6 @@ function forceStatusAfterInterrupt(state: SubagentStatusState, now: number): Sub
     lastActivityAtMs: now,
     localOverrideAtMs: now,
     localOverrideSequence: state.lastActivitySequence,
-    activeNow: false,
     activeSinceMs: null,
     activeScope: null,
     waitingSinceMs: now,
@@ -235,7 +230,7 @@ function classifyProblemState(state: SubagentStatusState, now: number): Pick<Sta
   const problemMs = Math.max(0, now - problemSinceMs);
   if (problemMs >= SNAPSHOT_STALLED_AFTER_MS) return { kind: "stalled", statusLabel: problemLabel };
 
-  const lastHealthyKind = state.activeNow
+  const lastHealthyKind = state.phase === "active"
     ? "active"
     : state.waitingSinceMs != null || state.phase === "done"
       ? "waiting"
@@ -253,7 +248,7 @@ function classifyStatus(state: SubagentStatusState, now: number): StatusSnapshot
   let statusLabel: string | null = null;
 
   if (state.snapshotState === "present") {
-    if (state.phase === "active" || state.activeNow) {
+    if (state.phase === "active") {
       kind = "active";
     } else if (state.phase === "waiting") {
       kind = "waiting";
@@ -354,9 +349,11 @@ export function createLiveness(params: {
   /** The label shown while a subagent is mid-tool, or undefined when it is not. */
   const activityLabel = (activity: SubagentActivityState): string | undefined => {
     if (activity.phase !== "active") return undefined;
+    // Only "tool" carries a name worth surfacing; every other scope already
+    // reads as its own label. Mutation testing found the per-scope branches
+    // that used to sit here were unreachable: the fallthrough returned the
+    // identical string, so flipping their conditions changed nothing.
     if (activity.activeScope === "tool") return activity.toolName ?? "tool";
-    if (activity.activeScope === "provider") return "provider";
-    if (activity.activeScope === "streaming") return "streaming";
     return activity.activeScope;
   };
 
@@ -375,7 +372,6 @@ export function createLiveness(params: {
         updatedAt: read.activity.updatedAt,
         sequence: read.activity.sequence,
         phase: read.activity.phase,
-        active: read.activity.phase === "active",
         activeScope: read.activity.activeScope,
         activeSince: read.activity.activeSince,
         waitingSince: read.activity.waitingSince,

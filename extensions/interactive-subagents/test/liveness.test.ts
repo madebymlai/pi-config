@@ -208,6 +208,64 @@ describe("liveness.ts", () => {
       });
     });
 
+    it("labels the scope a subagent is busy in when it is not a tool", () => {
+      withTempDir((dir) => {
+        for (const scope of ["provider", "streaming"] as const) {
+          const { liveness, write } = makeLiveness(dir, { id: `child-${scope}` });
+          write({ updatedAt: 5_000, activeScope: scope, activeSince: 5_000, toolName: undefined });
+          liveness.observe(5_000);
+
+          const snapshot = liveness.snapshot(5_000);
+          assert.equal(snapshot.kind, "active");
+          assert.equal(snapshot.activityLabel, scope, `expected the ${scope} scope to label itself`);
+        }
+      });
+    });
+
+    it("keeps a finished subagent as waiting when the file then goes missing", () => {
+      withTempDir((dir) => {
+        const { liveness, write, remove } = makeLiveness(dir);
+        write({
+          updatedAt: 5_000,
+          phase: "done",
+          latestEvent: "session_shutdown",
+          activeScope: undefined,
+          agentActive: false,
+          turnActive: false,
+          toolActive: false,
+        });
+        liveness.observe(5_000);
+
+        // A done subagent tears its own file down; that must not read as trouble.
+        remove();
+        liveness.observe(6_000);
+        assert.equal(liveness.snapshot(6_000).kind, "waiting");
+      });
+    });
+
+    it("drops a stalled subagent back to starting, not stalled, on a fresh problem", () => {
+      withTempDir((dir) => {
+        const { liveness, write, remove } = makeLiveness(dir);
+        write({
+          updatedAt: 1_000,
+          phase: "starting",
+          latestEvent: "session_start",
+          activeScope: undefined,
+          turnActive: false,
+          toolActive: false,
+        });
+        liveness.tick(1_000);
+        liveness.tick(1_000 + SNAPSHOT_STALLED_AFTER_MS);
+        assert.equal(liveness.snapshot(1_000 + SNAPSHOT_STALLED_AFTER_MS).kind, "stalled");
+
+        // The problem clock restarts, so we are back to knowing nothing rather
+        // than to asserting it is still stuck.
+        remove();
+        liveness.observe(2_000 + SNAPSHOT_STALLED_AFTER_MS);
+        assert.equal(liveness.snapshot(2_000 + SNAPSHOT_STALLED_AFTER_MS).kind, "starting");
+      });
+    });
+
     it("keeps the last healthy kind during transient snapshot loss", () => {
       withTempDir((dir) => {
         const { liveness, write, remove } = makeLiveness(dir);
@@ -242,6 +300,10 @@ describe("liveness.ts", () => {
         const snapshot = liveness.snapshot(11_000);
         assert.equal(snapshot.kind, "active");
         assert.equal(snapshot.statusLabel, null);
+        // Holding the last healthy kind would produce the same kind, so assert
+        // the read itself landed: an equal timestamp at an equal sequence is not
+        // older, and must not be rejected as such.
+        assert.equal(snapshot.snapshotState, "present");
       });
     });
   });
@@ -336,6 +398,11 @@ describe("liveness.ts", () => {
         liveness.observe(22_000);
         assert.equal(liveness.snapshot(22_000).kind, "waiting");
         assert.equal(liveness.snapshot(22_000).activityLabel, "interrupted");
+
+        // Same millisecond as the override but a higher sequence: newer, so it wins.
+        write({ updatedAt: 20_000, sequence: 2, activeSince: 20_000 });
+        liveness.observe(23_000);
+        assert.equal(liveness.snapshot(23_000).kind, "active", "sequence outranks an equal timestamp");
 
         // Genuinely newer: the subagent has picked the work back up.
         write({
