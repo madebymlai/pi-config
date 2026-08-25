@@ -78,18 +78,21 @@ const USAGE_TONE = {
   critical: "error",
 } as const satisfies Record<UsageSeverity, string>;
 
-/**
- * What the orchestrator is told about spawning, used verbatim as both the tool
- * description and its prompt snippet. It was written out twice, identically;
- * editing one and not the other silently changed what the model was told.
- */
+/** Injected into the system prompt, so it stays short. */
+const SPAWN_SNIPPET =
+  "Spawn a sub-agent in its own pane. Fire and forget: its result arrives later as a steer " +
+  "message. Never poll for it and never invent one.";
+
+/** Shown when choosing the tool. Says what it does, then how results arrive. */
 const SPAWN_GUIDANCE =
-  "Spawn a sub-agent in a dedicated terminal multiplexer pane. " +
-  "This is a fire-and-forget async tool: the call returns immediately with only an acknowledgement. " +
-  "When the sub-agent finishes, the harness AUTOMATICALLY delivers its result as a steer message that wakes you up and starts a new turn — you do not need to do anything to receive it. " +
-  "DO NOT write polling loops, sleep/wait commands, tail/watch scripts, or repeatedly read session/log files to detect completion. DO NOT call subagents_list or any other tool to 'check' status. All of that is wasted work — the harness handles delivery for you. " +
-  "DO NOT fabricate, assume, or summarize results after calling this tool. " +
-  "After spawning, either end your turn immediately, or work on other independent tasks (including spawning more subagents in parallel). The harness will wake you with the result when it is ready.";
+  "Spawn a sub-agent in its own terminal pane to carry out one task independently. " +
+  "Returns immediately with an acknowledgement, never with a result. " +
+  "When the sub-agent finishes, the harness delivers its result as a steer message that wakes " +
+  "you and starts a new turn. You do nothing to receive it. " +
+  "Never poll, sleep, tail logs, read session files, or call another tool to check status: that " +
+  "work is always wasted. Never state a result you have not been given. " +
+  "After spawning, end your turn or start other independent work, including further sub-agents " +
+  "in parallel.";
 
 const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url));
 // <extensions>/interactive-subagents -> <extensions>
@@ -124,18 +127,31 @@ function getModuleAbortSignal(): AbortSignal {
 const SubagentParams = Type.Object({
   agent: Type.String({
     description:
-      "Which agent to spawn (e.g. 'worker', 'scout', 'researcher'). This loads the agent's " +
-      "fixed profile — its model, tool loadout, and system prompt. Must be one of the available agents.",
+      "Which agent to spawn, for example 'worker', 'scout' or 'researcher'. This loads that " +
+      "agent's fixed profile: its model, tool loadout and system prompt. Must be an agent that " +
+      "subagents_list reports.",
   }),
-  task: Type.String({ description: "Task/prompt for the sub-agent" }),
+  task: Type.String({
+    description:
+      "What the sub-agent must accomplish. It starts with no memory of this conversation and " +
+      "cannot ask you for background without stopping to wait, so state the goal, the files or " +
+      "areas involved, and what finished looks like.",
+  }),
   name: Type.Optional(
     Type.String({
       description:
-        "Optional cosmetic label for the subagent's pane and widget row. Defaults to the agent name. " +
-        "Has no effect on which agent runs — use `agent` for that.",
+        "Cosmetic label for the sub-agent's pane and widget row. Defaults to the agent name. " +
+        "It selects nothing: use `agent` to choose which agent runs. It does become the handle " +
+        "send_message addresses this sub-agent by.",
     }),
   ),
-  model: Type.Optional(Type.String({ description: "Model override (overrides agent default)" })),
+  model: Type.Optional(
+    Type.String({
+      description:
+        "Run this one spawn on a different model than the agent's profile specifies. Reach for " +
+        "it when a task is unusually hard or unusually routine.",
+    }),
+  ),
   cwd: Type.Optional(
     Type.String({
       description:
@@ -526,7 +542,7 @@ async function launchSubagent(
   // Only full-context fork mode inherits prior conversation state.
   // Blank-session modes need the wrapper instructions and artifact-backed handoff.
   const modeHint = launchBehavior.autoExit
-    ? "Complete your task autonomously. When you are finished, simply stop — your session ends automatically."
+    ? "Complete your task autonomously. When you are finished, simply stop. Your session ends automatically."
     : "Complete your task. The user can interact with you at any time, and the session ends when the user exits the pane.";
   const summaryInstruction = launchBehavior.autoExit
     ? "Your FINAL assistant message should summarize what you accomplished."
@@ -676,7 +692,7 @@ function deliverPendingMessage(running: RunningSubagent): void {
   const name = running.name; // unique per session (deduped at spawn) — targets the reply
   const sessionId = existsSync(running.sessionFile) ? getSessionId(running.sessionFile) : null;
   const elapsed = Math.floor((Date.now() - running.startTime) / 1000);
-  const replyHint = `\n\nReply with send_message({ to: "${name}", message: "…" }) — the same name works whether it is still running or has since exited. It stays open until you reply.`;
+  const replyHint = `\n\nReply with send_message({ to: "${name}", message: "…" }). The same name works whether it is still running or has since exited, and it stays open until you reply.`;
 
   latestPi?.sendMessage(
     {
@@ -1109,7 +1125,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       name: "subagent",
       label: "Subagent",
       description: SPAWN_GUIDANCE,
-      promptSnippet: SPAWN_GUIDANCE,
+      promptSnippet: SPAWN_SNIPPET,
       parameters: SubagentParams,
 
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1257,13 +1273,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       name: "subagents_list",
       label: "List Subagents",
       description:
-        "List all available subagent definitions. " +
-        "Scans project-local .pi/agents/ and global ~/.pi/agent/agents/. " +
-        "Project-local agents override global ones with the same name.",
+        "List the agent profiles you can spawn, with the model and tools each one runs. Read it " +
+        "when you are unsure which profile fits a task. These are role definitions, not running " +
+        "sub-agents: a name here goes in `subagent({ agent })`, never in `send_message({ to })`. " +
+        "A project's .pi/agents/ shadows the global ones by name.",
       promptSnippet:
-        "List all available subagent definitions. " +
-        "Scans project-local .pi/agents/ and global ~/.pi/agent/agents/. " +
-        "Project-local agents override global ones with the same name.",
+        "List the agent profiles available to spawn. Role definitions, not running sub-agents.",
       parameters: Type.Object({}),
 
       async execute() {

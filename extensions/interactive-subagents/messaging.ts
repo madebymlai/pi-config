@@ -203,7 +203,7 @@ function describe(delivery: Delivery): Presentation {
         glyph: "↑",
         summary: "orchestrator — message sent",
         text:
-          "Message sent to the orchestrator. Stop here and wait — do not continue working or " +
+          "Message sent to the orchestrator. Stop here and wait. Do not continue working or " +
           "assume an answer. Their reply will arrive as your next message.",
       };
     case "no-parent":
@@ -221,7 +221,7 @@ function describe(delivery: Delivery): Presentation {
         glyph: "✗",
         summary: "no recipient named",
         text:
-          `You left \`to\` unset, which means "the agent that spawned me" — but you are the ` +
+          `You left \`to\` unset, which means "the agent that spawned me", but you are the ` +
           `top-level session and nothing spawned you. Name the recipient explicitly. ` +
           (delivery.known.length > 0
             ? `Known recipients: ${delivery.known.join(", ")}.`
@@ -242,7 +242,7 @@ function describe(delivery: Delivery): Presentation {
         tone: "error",
         glyph: "✗",
         summary: "empty message",
-        text: "`message` is required — there is nothing to deliver.",
+        text: "`message` is required. There is nothing to deliver.",
       };
     case "unresumable":
       return {
@@ -278,44 +278,41 @@ export function registerSendMessage(
     name: "send_message",
     label: "Send Message",
     description:
-      "Send a message to another agent in this session. " +
-      "Omit `to` to reach the agent that spawned you — the usual case. " +
-      "Name a subagent in `to` to reach it instead. " +
-      "Names are unique within your session and persist after a subagent finishes, so the SAME name " +
-      "works whether it is running or finished: a running subagent is steered mid-task, a finished one " +
-      "is resumed and continued. " +
-      "Every form returns immediately. Steering acknowledges locally and does not, by itself, produce a " +
-      "new result. Resuming is fire-and-forget: when the resumed session finishes, the harness " +
-      "AUTOMATICALLY delivers its result as a steer message that wakes you up. Messaging the parent keeps " +
-      "your session open and their reply arrives as your next message. " +
-      "DO NOT poll, sleep, tail logs, or read session files to detect a reply — the harness handles delivery. " +
-      "DO NOT fabricate or assume a reply. After calling, either wait or work on other independent tasks.",
+      "Send a message to another agent in this session. Omit `to` to reach the agent that " +
+      "spawned you, which is the usual case. Name a sub-agent in `to` to reach it instead. " +
+      "One name reaches a sub-agent whether it is still running or already finished: a running " +
+      "one is steered mid-task, a finished one is resumed and continues. " +
+      "Every form returns immediately. Steering only acknowledges and produces no new result by " +
+      "itself. Resuming is fire and forget: the resumed session's result arrives later as a " +
+      "steer message. Messaging the agent that spawned you holds your session open, and their " +
+      "reply arrives as your next message. " +
+      "Never poll, sleep, tail logs, or read session files to detect a reply, and never state a " +
+      "reply you have not received.",
     promptSnippet:
-      "Message another agent. Omit `to` to reach the one that spawned you; name a subagent in `to` " +
-      "to reach it instead (steers it if running, resumes it if finished). " +
-      "Never poll for a reply and never fabricate one.",
+      "Message another agent. Omit `to` to reach the one that spawned you, or name a sub-agent " +
+      "in `to` to reach it instead. Never poll for a reply and never invent one.",
     promptGuidelines: [
-      "Leave `to` unset to reach the agent that spawned you. Every other recipient is a subagent's display name.",
-      "If you have subagents of your own, name the one you mean — an unset `to` always goes upward, never to a child.",
+      "Leave `to` unset to reach the agent that spawned you. Any other recipient is a sub-agent's display name.",
+      "Display names come from the spawn acknowledgement, the widget, and the follow-up line on a result. Name one wrong and the error lists the names that exist.",
       "Ask one thing per message. Make separate calls for unrelated questions.",
       "Give enough context that the recipient can act without re-reading your whole task.",
-      "After messaging the parent, stop and wait — their reply arrives as your next turn.",
-      "Use subagents_list when you are unsure which names exist.",
+      "After messaging the agent that spawned you, stop and wait. Their reply arrives as your next turn.",
     ],
 
     parameters: Type.Object({
       to: Type.Optional(
         Type.String({
           description:
-            "Display name of the recipient. A subagent's name works whether it is still running " +
-            `or has already finished. Omit to reach the agent that spawned you, or say "${PARENT}" ` +
-            "explicitly. A top-level session has no parent and must name a recipient.",
+            "Display name of the recipient, which reaches that sub-agent whether it is still " +
+            `running or already finished. Omit it to reach the agent that spawned you, or say ` +
+            `"${PARENT}" to say so explicitly. A top-level session has nothing above it and must ` +
+            "name a recipient.",
         }),
       ),
       message: Type.String({
         description:
-          "What to say: a follow-up instruction for a running subagent, the next task for a finished " +
-          "one, or a question or report for the parent.",
+          "What to say: a follow-up instruction for a running sub-agent, the next task for a " +
+          "finished one, or a question or report for the agent that spawned you.",
       }),
     }),
 
