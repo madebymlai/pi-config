@@ -20,8 +20,12 @@ const JINA_TIMEOUT_MS = 30000;
  * 48 KiB matches the allowance the subagent extension used for the same job.
  */
 const MAX_OUTPUT_CHARS = 48 * 1024;
-const TRUNCATION_MARKER =
-	"\n\n[truncated by web_fetch — fetch a more specific URL for the rest]";
+/**
+ * Room reserved for the continuation marker, whose length depends on the very
+ * offsets it reports. Reserving a fixed slice avoids that circularity at the
+ * cost of a few unused bytes.
+ */
+const MARKER_BUDGET = 160;
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -551,12 +555,24 @@ export default function (pi: ExtensionAPI) {
 		name: "web_fetch",
 		label: "Web Fetch",
 		description:
-			"Fetch a web page and extract readable content as clean markdown. Handles PDFs, plain text, and falls back to Jina Reader for JS-rendered pages. Long pages are truncated, which the result reports — fetch a more specific URL when that happens.",
+			"Fetch a web page and extract readable content as clean markdown. Handles PDFs, plain text, and falls back to Jina Reader for JS-rendered pages. Output is capped; a longer page reports the offset to continue from, so the rest can be read with follow-up calls.",
 		promptSnippet:
 			"Fetch a URL and extract readable content as markdown. Supports HTML pages, PDFs, and plain text.",
 
+		promptGuidelines: [
+			`Output is capped at ${MAX_OUTPUT_CHARS} characters. When a page is longer the result says so and reports the offset to continue from — read the next window with the same url and that offset, rather than refetching from the start.`,
+			"Only page through a document when the part you need is genuinely further in. A more specific URL, or a search for the section, is usually cheaper than reading a long page end to end.",
+		],
+
 		parameters: Type.Object({
 			url: Type.String({ description: "URL to fetch" }),
+			offset: Type.Optional(
+				Type.Number({
+					description:
+						"Character offset to start from, for reading past the output cap. Use the offset reported by a previous truncated fetch. Defaults to 0.",
+					minimum: 0,
+				}),
+			),
 		}),
 
 		async execute(_toolCallId, params, signal) {
@@ -570,19 +586,38 @@ export default function (pi: ExtensionAPI) {
 				? `# ${result.title}\n\nSource: ${result.url}\n\n---\n\n`
 				: "";
 			const body = header + result.content;
-			const truncated = body.length > MAX_OUTPUT_CHARS;
-			const text = truncated
-				? body.slice(0, MAX_OUTPUT_CHARS - TRUNCATION_MARKER.length) +
-					TRUNCATION_MARKER
-				: body;
+			const total = body.length;
+			const requested = Math.max(0, params.offset ?? 0);
+			const start = Math.min(requested, total);
+
+			if (start >= total && total > 0) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `[nothing to read at offset ${requested}: this document is ${total} characters]`,
+						},
+					],
+					details: { url: result.url, title: result.title, chars: total, offset: start, returned: 0, hasMore: false },
+				};
+			}
+
+			const fits = total - start <= MAX_OUTPUT_CHARS;
+			const end = fits ? total : start + MAX_OUTPUT_CHARS - MARKER_BUDGET;
+			const hasMore = end < total;
+			const marker = hasMore
+				? `\n\n[truncated: showing characters ${start}-${end} of ${total}. Continue with the same url and offset: ${end}]`
+				: "";
 
 			return {
-				content: [{ type: "text" as const, text }],
+				content: [{ type: "text" as const, text: body.slice(start, end) + marker }],
 				details: {
 					url: result.url,
 					title: result.title,
-					chars: result.content.length,
-					truncated,
+					chars: total,
+					offset: start,
+					returned: end - start,
+					hasMore,
 				},
 			};
 		},
@@ -629,15 +664,23 @@ export default function (pi: ExtensionAPI) {
 			const details = result.details as {
 				title?: string;
 				chars?: number;
-				truncated?: boolean;
+				offset?: number;
+				returned?: number;
+				hasMore?: boolean;
 			};
 
 			const title = details?.title || "Untitled";
 			const chars = details?.chars ?? 0;
+			const offset = details?.offset ?? 0;
+			const returned = details?.returned ?? chars;
+			const window =
+				details?.hasMore || offset > 0
+					? ` (${offset}-${offset + returned} of ${chars} chars)`
+					: ` (${chars} chars)`;
 			const status =
 				theme.fg("success", title) +
-				theme.fg("muted", ` (${chars} chars)`) +
-				(details?.truncated ? theme.fg("warning", " truncated") : "");
+				theme.fg("muted", window) +
+				(details?.hasMore ? theme.fg("warning", " more available") : "");
 
 			if (!expanded) {
 				text.setText(status);
