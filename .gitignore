@@ -31,3 +31,6 @@ extensions/summaries/config.private.json.*.tmp
 # Local editor settings
 .vscode/
 .idea/
+
+# Observational memory output (written into whatever project pi runs in)
+.memory/
