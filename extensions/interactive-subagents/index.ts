@@ -45,10 +45,10 @@ import {
   findLastAssistantMessage,
   getNewEntries,
   getSessionId,
-  seedSubagentSessionFile,
   summarizeSessionStats,
   type SessionStats,
 } from "./observe/transcript.ts";
+import { seedSubagentSessionFile } from "./spawn/seed-session.ts";
 import { readSubagentLoadout, writeSubagentLoadout, type SubagentLoadout } from "./store/loadout.ts";
 import { readNameRegistry, registerName, resolveNameInRegistry } from "./store/name-registry.ts";
 // Only the aggregate formatting and config are still index.ts's business;

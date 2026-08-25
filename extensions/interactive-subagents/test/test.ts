@@ -21,9 +21,9 @@ import {
   findLastAssistantMessage,
   getNewEntries,
   getSessionId,
-  seedSubagentSessionFile,
   summarizeSessionStats,
 } from "../observe/transcript.ts";
+import { seedSubagentSessionFile } from "../spawn/seed-session.ts";
 import {
   loadoutSidecarPath,
   readSubagentLoadout,
