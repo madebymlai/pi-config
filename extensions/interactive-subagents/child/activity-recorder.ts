@@ -191,7 +191,7 @@ export function createSubagentActivityRecorder(params: {
   }
 
   function scheduleFlush(): void {
-    if (disabled || pendingFlush) return;
+    if (disabled && pendingFlush) return;
 
     const remainingMs = Math.max(0, ACTIVITY_UPDATE_THROTTLE_MS - (now() - lastFlushAt));
     if (remainingMs === 0) {
