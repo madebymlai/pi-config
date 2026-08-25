@@ -6,6 +6,13 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import * as subagentsModule from "../index.ts";
+import { listAgents, resolveAgentLaunch, RESUME_LAUNCH } from "../agents.ts";
+import {
+  createTestDir,
+  restoreEnvVar,
+  writeAgentFile,
+  withIsolatedAgentEnv,
+} from "./support/agent-env.ts";
 
 import {
   getNewEntries,
@@ -58,10 +65,6 @@ import { __pollForExitTest__ } from "../tmux.ts";
 
 // --- Helpers ---
 
-function createTestDir(): string {
-  return mkdtempSync(join(tmpdir(), "subagents-test-"));
-}
-
 function createSessionFile(dir: string, entries: object[]): string {
   const file = join(dir, "test-session.jsonl");
   const content = entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
@@ -76,14 +79,6 @@ function withTempDir(run: (dir: string) => void) {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-}
-
-function restoreEnvVar(name: string, value: string | undefined) {
-  if (value === undefined) {
-    delete process.env[name];
-    return;
-  }
-  process.env[name] = value;
 }
 
 function withMockedNow<T>(now: number, fn: () => T): T {
@@ -106,45 +101,6 @@ async function withMockedNowAsync<T>(now: number, fn: () => Promise<T>): Promise
   }
 }
 
-function writeAgentFile(
-  agentsDir: string,
-  name: string,
-  frontmatter: string,
-  body = "You are a test agent.",
-) {
-  mkdirSync(agentsDir, { recursive: true });
-  writeFileSync(join(agentsDir, `${name}.md`), `---\n${frontmatter}\n---\n\n${body}\n`);
-}
-
-async function withIsolatedAgentEnv(
-  fn: (paths: {
-    projectDir: string;
-    projectAgentsDir: string;
-    globalDir: string;
-    globalAgentsDir: string;
-  }) => Promise<void> | void,
-) {
-  const root = createTestDir();
-  const previousCwd = process.cwd();
-  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-  const projectDir = join(root, "project");
-  const projectAgentsDir = join(projectDir, ".pi", "agents");
-  const globalDir = join(root, "global");
-  const globalAgentsDir = join(globalDir, "agents");
-
-  mkdirSync(projectAgentsDir, { recursive: true });
-  mkdirSync(globalAgentsDir, { recursive: true });
-  process.chdir(projectDir);
-  process.env.PI_CODING_AGENT_DIR = globalDir;
-
-  try {
-    await fn({ projectDir, projectAgentsDir, globalDir, globalAgentsDir });
-  } finally {
-    process.chdir(previousCwd);
-    restoreEnvVar("PI_CODING_AGENT_DIR", previousAgentDir);
-    rmSync(root, { recursive: true, force: true });
-  }
-}
 const SESSION_HEADER = { type: "session", id: "sess-001", version: 3 };
 const MODEL_CHANGE = { type: "model_change", id: "mc-001", parentId: null };
 const USER_MSG = {
@@ -924,7 +880,7 @@ describe("subagent discovery", () => {
         ].join("\n"),
       );
 
-      const loaded = testApi.loadAgentDefaults("lineage-mode-test-agent");
+      const loaded = resolveAgentLaunch("lineage-mode-test-agent").defs;
       assert.ok(loaded, "expected agent to load");
       assert.equal(loaded.sessionMode, "lineage-only");
     });
@@ -951,10 +907,10 @@ describe("subagent discovery", () => {
         ].join("\n"),
       );
 
-      const loadedTrue = testApi.loadAgentDefaults("interactive-true-test-agent");
+      const loadedTrue = resolveAgentLaunch("interactive-true-test-agent").defs;
       assert.equal(loadedTrue?.interactive, true);
 
-      const loadedFalse = testApi.loadAgentDefaults("interactive-false-test-agent");
+      const loadedFalse = resolveAgentLaunch("interactive-false-test-agent").defs;
       assert.equal(loadedFalse?.interactive, false);
     });
   });
@@ -970,52 +926,17 @@ describe("subagent discovery", () => {
         ].join("\n"),
       );
 
-      const loaded = testApi.loadAgentDefaults("interactive-unset-test-agent");
+      const loaded = resolveAgentLaunch("interactive-unset-test-agent").defs;
       assert.equal(loaded?.interactive, undefined);
     });
   });
 
-  it("resolveEffectiveInteractive defaults to the inverse of auto-exit", () => {
-    // Autonomous agents (auto-exit: true) are NOT interactive — parent gets stall pings.
-    assert.equal(
-      testApi.resolveEffectiveInteractive({ autoExit: true }),
-      false,
-    );
-    // Agents without auto-exit ARE interactive — parent does not receive status transition pings.
-    assert.equal(
-      testApi.resolveEffectiveInteractive({ autoExit: false }),
-      true,
-    );
-    assert.equal(
-      testApi.resolveEffectiveInteractive({}),
-      true,
-    );
-    // Bare spawn with no agent defs (e.g. /iterate fork) is interactive by default.
-    assert.equal(
-      testApi.resolveEffectiveInteractive(null),
-      true,
-    );
-  });
-
-  it("resolveEffectiveInteractive honors explicit frontmatter over the auto-exit default", () => {
-    // Autonomous agent that still wants to be treated as interactive.
-    assert.equal(
-      testApi.resolveEffectiveInteractive({ autoExit: true, interactive: true }),
-      true,
-    );
-    // Non-auto-exit agent that opts back into stall pings.
-    assert.equal(
-      testApi.resolveEffectiveInteractive({ interactive: false }),
-      false,
-    );
-  });
-
   it("bundled scout/researcher/worker all resolve as non-interactive (auto-exit)", () => {
     for (const name of ["scout", "researcher", "worker"]) {
-      const defs = testApi.loadAgentDefaults(name);
-      assert.ok(defs, `expected bundled agent ${name} to be discoverable`);
+      const launch = resolveAgentLaunch(name);
+      assert.ok(launch.defs, `expected bundled agent ${name} to be discoverable`);
       assert.equal(
-        testApi.resolveEffectiveInteractive(defs),
+        launch.interactive,
         false,
         `${name} should resolve as non-interactive (autonomous, auto-exit)`,
       );
@@ -1023,7 +944,7 @@ describe("subagent discovery", () => {
   });
 
   it("worker is granted the spawning toolset restricted to scout and researcher", () => {
-    const worker = testApi.loadAgentDefaults("worker");
+    const worker = resolveAgentLaunch("worker").defs;
     assert.ok(worker, "expected bundled worker to be discoverable");
     assert.deepEqual(worker.subagentAgents, ["scout", "researcher"]);
 
@@ -1041,9 +962,9 @@ describe("subagent discovery", () => {
     // A tool named in --tools but backed by no -e silently does not exist in
     // the child, so a grant without a mapping is worse than no grant at all.
     for (const name of ["scout", "worker"]) {
-      const defs = testApi.loadAgentDefaults(name);
+      const defs = resolveAgentLaunch(name).defs;
       assert.ok(defs, `expected bundled agent ${name} to be discoverable`);
-      const allowlist = testApi.buildSubagentToolAllowlist(defs.tools, { grantSpawning: false });
+      const allowlist = testApi.buildSubagentToolAllowlist(defs!.tools, { grantSpawning: false });
       assert.ok(allowlist, `expected ${name} to restrict tools`);
       for (const tool of allowlist!.split(",")) {
         if (["read", "write", "edit", "bash", "grep", "find", "ls", "send_message"].includes(tool)) continue;
@@ -1057,9 +978,9 @@ describe("subagent discovery", () => {
 
   it("scout and researcher are not granted spawning tools", () => {
     for (const name of ["scout", "researcher"]) {
-      const defs = testApi.loadAgentDefaults(name);
+      const defs = resolveAgentLaunch(name).defs;
       assert.ok(defs, `expected bundled agent ${name} to be discoverable`);
-      assert.equal(defs.subagentAgents, undefined, `${name} should not declare subagent_agents`);
+      assert.equal(defs!.subagentAgents, undefined, `${name} should not declare subagent_agents`);
     }
   });
 
@@ -1090,49 +1011,10 @@ describe("subagent discovery", () => {
         ].join("\n"),
       );
 
-      const loaded = testApi.loadAgentDefaults("invalid-mode-test-agent");
+      const loaded = resolveAgentLaunch("invalid-mode-test-agent").defs;
       assert.ok(loaded, "expected agent to load");
       assert.equal(loaded.sessionMode, undefined);
     });
-  });
-
-  it("resolves session mode from frontmatter (standalone default)", () => {
-    assert.equal(testApi.resolveEffectiveSessionMode(null), "standalone");
-    assert.equal(
-      testApi.resolveEffectiveSessionMode({ sessionMode: "lineage-only" }),
-      "lineage-only",
-    );
-    assert.equal(
-      testApi.resolveEffectiveSessionMode({ sessionMode: "fork" }),
-      "fork",
-    );
-  });
-
-  it("resolves launch behavior for standalone, lineage-only, and fork modes", () => {
-    assert.deepEqual(testApi.resolveLaunchBehavior(null), {
-      sessionMode: "standalone",
-      seededSessionMode: null,
-      inheritsConversationContext: false,
-      taskDelivery: "artifact",
-    });
-    assert.deepEqual(
-      testApi.resolveLaunchBehavior({ sessionMode: "lineage-only" }),
-      {
-        sessionMode: "lineage-only",
-        seededSessionMode: "lineage-only",
-        inheritsConversationContext: false,
-        taskDelivery: "artifact",
-      },
-    );
-    assert.deepEqual(
-      testApi.resolveLaunchBehavior({ sessionMode: "fork" }),
-      {
-        sessionMode: "fork",
-        seededSessionMode: "fork",
-        inheritsConversationContext: true,
-        taskDelivery: "direct",
-      },
-    );
   });
 
   it("buildSubagentToolAllowlist preserves requested tools and adds child control tools", () => {
@@ -1280,7 +1162,7 @@ describe("subagent discovery", () => {
       assert.equal(agents.some((agent: any) => agent.name === "hidden-discovery-test-agent"), false);
       assert.doesNotMatch(result.content[0].text, /hidden-discovery-test-agent/);
 
-      const loaded = testApi.loadAgentDefaults("hidden-discovery-test-agent");
+      const loaded = resolveAgentLaunch("hidden-discovery-test-agent").defs;
       assert.ok(loaded, "expected hidden agent to remain directly loadable");
       assert.equal(loaded.model, "anthropic/test-hidden");
       assert.equal(loaded.body, "You are the hidden agent.");
@@ -1324,7 +1206,7 @@ describe("subagent discovery", () => {
       assert.equal(agents.some((agent: any) => agent.name === "shadowed-discovery-test-agent"), false);
       assert.doesNotMatch(result.content[0].text, /shadowed-discovery-test-agent/);
 
-      const loaded = testApi.loadAgentDefaults("shadowed-discovery-test-agent");
+      const loaded = resolveAgentLaunch("shadowed-discovery-test-agent").defs;
       assert.ok(loaded, "expected project override to remain directly loadable");
       assert.equal(loaded.model, "anthropic/test-project");
       assert.equal(loaded.body, "You are the project hidden agent.");
@@ -1696,7 +1578,7 @@ describe("tool registration", () => {
   it("always resumes subagents as autonomous (auto-exit, non-interactive tracking)", () => {
     const testApi = (subagentsModule as any).__test__;
 
-    assert.deepEqual(testApi.resolveResumeLaunchBehavior(), {
+    assert.deepEqual(RESUME_LAUNCH, {
       autoExit: true,
       interactive: false,
     });
