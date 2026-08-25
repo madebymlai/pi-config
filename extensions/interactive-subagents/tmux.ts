@@ -43,7 +43,7 @@ function hasCommand(command: string): boolean {
  * True when running inside tmux with the tmux binary on PATH.
  * `TMUX` is set by tmux in every process it spawns (shell or pane).
  */
-export function isTmuxAvailable(): boolean {
+function isTmuxAvailable(): boolean {
   return !!process.env.TMUX && hasCommand("tmux");
 }
 
@@ -122,7 +122,7 @@ export function createSurface(name: string): string {
  * Create a new split in the given direction from an optional source pane.
  * Returns the new pane id (e.g. `%12`).
  */
-export function createSurfaceSplit(
+function createSurfaceSplit(
   name: string,
   direction: "left" | "right" | "up" | "down",
   fromSurface?: string,
@@ -203,23 +203,9 @@ export function sendLongCommand(
 }
 
 /**
- * Read the screen contents of a pane (sync).
- */
-export function readScreen(surface: string, lines = 50): string {
-  requireTmux();
-  return execFileSync(
-    "tmux",
-    ["capture-pane", "-p", "-t", surface, "-S", `-${Math.max(1, lines)}`],
-    {
-      encoding: "utf8",
-    },
-  );
-}
-
-/**
  * Read the screen contents of a pane (async).
  */
-export async function readScreenAsync(surface: string, lines = 50): Promise<string> {
+async function readScreenAsync(surface: string, lines = 50): Promise<string> {
   requireTmux();
   const { stdout } = await execFileAsync(
     "tmux",
