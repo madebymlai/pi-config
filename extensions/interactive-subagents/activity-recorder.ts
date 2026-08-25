@@ -1,54 +1,25 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+/**
+ * Writing a subagent's activity file, from inside the subagent.
+ *
+ * This runs in the child process, driven by that session's own lifecycle events.
+ * Two things shape it. Writes are throttled, because a busy agent emits events
+ * far faster than any watcher needs them. And writes are atomic via a rename, so
+ * a parent reading concurrently sees either the old file or the new one, never a
+ * half-written one.
+ *
+ * Repeated write failures disable the recorder rather than let a subagent die of
+ * its own telemetry: the parent degrades to "no snapshot", which it already
+ * handles, and the subagent keeps working.
+ *
+ * Nothing here reads. See activity-reader.ts for the parent side.
+ */
+import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-
-export type SubagentActivityPhase = "starting" | "active" | "waiting" | "done";
-export type SubagentActivityScope = "agent" | "turn" | "provider" | "streaming" | "tool";
-
-export type SubagentActivityEvent =
-  | "session_start"
-  | "input"
-  | "before_agent_start"
-  | "agent_start"
-  | "agent_end"
-  | "turn_start"
-  | "turn_end"
-  | "before_provider_request"
-  | "after_provider_response"
-  | "message_update"
-  | "tool_execution_start"
-  | "tool_call"
-  | "tool_execution_update"
-  | "tool_result"
-  | "tool_execution_end"
-  | "await_reply"
-  | "session_shutdown";
-
-export interface SubagentActivityState {
-  version: 1;
-  runningChildId: string;
-  createdAt: number;
-  updatedAt: number;
-  sequence: number;
-  latestEvent: SubagentActivityEvent;
-  phase: SubagentActivityPhase;
-  agentActive: boolean;
-  turnActive: boolean;
-  providerActive: boolean;
-  toolActive: boolean;
-  activeScope?: SubagentActivityScope;
-  activeSince?: number;
-  waitingSince?: number;
-  turnIndex?: number;
-  messageEventType?: string;
-  toolCallId?: string;
-  toolName?: string;
-  toolStartedAt?: number;
-  toolEndedAt?: number;
-}
-
-export type ActivityReadResult =
-  | { ok: true; activity: SubagentActivityState }
-  | { ok: false; reason: "missing" | "invalid" | "wrong-id"; error?: string };
+import type {
+  SubagentActivityEvent,
+  SubagentActivityScope,
+  SubagentActivityState,
+} from "./activity-schema.ts";
 
 export type SubagentShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
 
@@ -74,130 +45,8 @@ export interface SubagentActivityRecorder {
 }
 
 const ACTIVITY_UPDATE_THROTTLE_MS = 500;
+
 const MAX_WRITE_FAILURES = 3;
-const KNOWN_PHASES = new Set<SubagentActivityPhase>(["starting", "active", "waiting", "done"]);
-const KNOWN_SCOPES = new Set<SubagentActivityScope>(["agent", "turn", "provider", "streaming", "tool"]);
-const KNOWN_EVENTS = new Set<SubagentActivityEvent>([
-  "session_start",
-  "input",
-  "before_agent_start",
-  "agent_start",
-  "agent_end",
-  "turn_start",
-  "turn_end",
-  "before_provider_request",
-  "after_provider_response",
-  "message_update",
-  "tool_execution_start",
-  "tool_call",
-  "tool_execution_update",
-  "tool_result",
-  "tool_execution_end",
-  "await_reply",
-  "session_shutdown",
-]);
-const MAX_ACTIVITY_STRING_LENGTH = 200;
-
-export function getSubagentActivityFile(artifactDir: string, runningChildId: string): string {
-  return join(artifactDir, "subagent-activity", `${runningChildId}.json`);
-}
-
-function requireObject(value: unknown): Record<string, unknown> | null {
-  if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
-
-function validateFiniteNumber(object: Record<string, unknown>, fieldName: string): string | null {
-  return Number.isFinite(object[fieldName]) ? null : `${fieldName} must be finite`;
-}
-
-function validateOptionalFiniteNumber(object: Record<string, unknown>, fieldName: string): string | null {
-  const value = object[fieldName];
-  return value == null || Number.isFinite(value) ? null : `${fieldName} must be finite when present`;
-}
-
-function validateInteger(object: Record<string, unknown>, fieldName: string): string | null {
-  return Number.isInteger(object[fieldName]) ? null : `${fieldName} must be an integer`;
-}
-
-function validateOptionalInteger(object: Record<string, unknown>, fieldName: string): string | null {
-  const value = object[fieldName];
-  return value == null || Number.isInteger(value) ? null : `${fieldName} must be an integer when present`;
-}
-
-function validateBoolean(object: Record<string, unknown>, fieldName: string): string | null {
-  return typeof object[fieldName] === "boolean" ? null : `${fieldName} must be a boolean`;
-}
-
-function validateOptionalActivityString(object: Record<string, unknown>, fieldName: string): string | null {
-  const value = object[fieldName];
-  if (value == null) return null;
-  if (typeof value !== "string") return `${fieldName} must be a string when present`;
-  if (/\r|\n/.test(value)) return `${fieldName} must not contain newlines`;
-  return value.length <= MAX_ACTIVITY_STRING_LENGTH ? null : `${fieldName} is too long`;
-}
-
-function invalidActivity(error: string): ActivityReadResult {
-  return { ok: false, reason: "invalid", error };
-}
-
-function validateActivity(value: unknown, expectedRunningChildId: string): ActivityReadResult {
-  const object = requireObject(value);
-  if (!object) return invalidActivity("activity must be an object");
-  if (object.version !== 1) return invalidActivity("unsupported activity version");
-  if (typeof object.runningChildId !== "string") return invalidActivity("runningChildId must be a string");
-  if (object.runningChildId !== expectedRunningChildId) return { ok: false, reason: "wrong-id" };
-  if (typeof object.latestEvent !== "string" || !KNOWN_EVENTS.has(object.latestEvent as SubagentActivityEvent)) {
-    return invalidActivity("unknown latestEvent");
-  }
-  if (typeof object.phase !== "string" || !KNOWN_PHASES.has(object.phase as SubagentActivityPhase)) {
-    return invalidActivity("unknown activity phase");
-  }
-  if (
-    object.activeScope != null &&
-    (typeof object.activeScope !== "string" || !KNOWN_SCOPES.has(object.activeScope as SubagentActivityScope))
-  ) {
-    return invalidActivity("unknown activeScope");
-  }
-
-  const validationError = [
-    validateFiniteNumber(object, "createdAt"),
-    validateFiniteNumber(object, "updatedAt"),
-    validateInteger(object, "sequence"),
-    validateBoolean(object, "agentActive"),
-    validateBoolean(object, "turnActive"),
-    validateBoolean(object, "providerActive"),
-    validateBoolean(object, "toolActive"),
-    validateOptionalFiniteNumber(object, "activeSince"),
-    validateOptionalFiniteNumber(object, "waitingSince"),
-    validateOptionalInteger(object, "turnIndex"),
-    validateOptionalFiniteNumber(object, "toolStartedAt"),
-    validateOptionalFiniteNumber(object, "toolEndedAt"),
-    validateOptionalActivityString(object, "messageEventType"),
-    validateOptionalActivityString(object, "toolCallId"),
-    validateOptionalActivityString(object, "toolName"),
-  ].find((error) => error != null);
-  if (validationError) return invalidActivity(validationError);
-
-  return { ok: true, activity: object as unknown as SubagentActivityState };
-}
-
-export function readSubagentActivityFile(
-  activityFile: string,
-  expectedRunningChildId: string,
-): ActivityReadResult {
-  if (!existsSync(activityFile)) return { ok: false, reason: "missing" };
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(activityFile, "utf8"));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, reason: "invalid", error: message };
-  }
-
-  return validateActivity(parsed, expectedRunningChildId);
-}
 
 export function writeSubagentActivityFile(activityFile: string, activity: SubagentActivityState): void {
   const dir = dirname(activityFile);

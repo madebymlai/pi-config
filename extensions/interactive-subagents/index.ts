@@ -45,16 +45,12 @@ import {
   findLastAssistantMessage,
   getNewEntries,
   getSessionId,
-  readNameRegistry,
-  readSubagentLoadout,
-  registerName,
-  resolveNameInRegistry,
   seedSubagentSessionFile,
   summarizeSessionStats,
-  writeSubagentLoadout,
   type SessionStats,
-  type SubagentLoadout,
-} from "./session.ts";
+} from "./transcript.ts";
+import { readSubagentLoadout, writeSubagentLoadout, type SubagentLoadout } from "./loadout.ts";
+import { readNameRegistry, registerName, resolveNameInRegistry } from "./name-registry.ts";
 // Only the aggregate formatting and config are still index.ts's business;
 // everything about an individual subagent's status now sits behind liveness.ts.
 import {

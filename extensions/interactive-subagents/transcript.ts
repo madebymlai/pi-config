@@ -1,3 +1,14 @@
+/**
+ * Reading and seeding a pi session transcript.
+ *
+ * A subagent's transcript is a JSONL file that another process is appending to
+ * while we read it, so nothing here may assume a complete or well-formed file:
+ * entries are parsed defensively and a torn last line is simply not there yet.
+ *
+ * Seeding is the write half, and it exists for one reason: a forked subagent
+ * needs the parent's conversation copied in before it starts, because pi has no
+ * way to hand a child an in-memory history.
+ */
 import {
   closeSync,
   existsSync,
@@ -5,7 +16,6 @@ import {
   openSync,
   readFileSync,
   readSync,
-  renameSync,
   writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -76,137 +86,6 @@ export function seedSubagentSessionFile(params: {
   writeFileSync(params.childSessionFile, lines.join("\n") + "\n", "utf8");
 }
 
-/**
- * A snapshot of everything needed to reconstruct a subagent's sandbox when its
- * session is later resumed via `send_message({ to })`.
- *
- * Written next to the session file as `<sessionFile>.loadout.json` at spawn
- * time. Resume replays this exact snapshot so the reincarnated process gets the
- * same `--no-extensions` + `--tools` restriction, model, identity, spawn
- * whitelist, cwd, and config dir it originally ran with — instead of falling
- * back to pi's default (all global extensions + full toolset). Storing the
- * resolved loadout (rather than re-deriving from the agent `.md` by name) keeps
- * resume faithful even if the agent definition is later edited, moved, or
- * deleted.
- */
-export interface SubagentLoadout {
-  /** Agent profile name (for PI_SUBAGENT_AGENT); null for agentless spawns. */
-  agent: string | null;
-  /** The `--tools` allowlist string, or null when the spawn was unrestricted. */
-  toolAllowlist: string | null;
-  /** Model id (without thinking suffix), or null to use the session default. */
-  model: string | null;
-  /** Thinking level appended to the model as `model:level`, or null. */
-  thinking: string | null;
-  /** How the identity text was applied: append/replace, or null. */
-  systemPromptMode: "append" | "replace" | null;
-  /** The system-prompt/identity text, only when it lived in the system prompt. */
-  identity: string | null;
-  /** Whether the agent auto-exits (informational; resume forces autonomous). */
-  autoExit: boolean;
-  /** Working directory the subagent ran in, or null. */
-  cwd: string | null;
-  /** PI_CODING_AGENT_DIR the subagent resolved config/extensions from, or null. */
-  agentDir: string | null;
-}
-
-/** Path of the loadout sidecar written next to a subagent session file. */
-export function loadoutSidecarPath(sessionFile: string): string {
-  return `${sessionFile}.loadout.json`;
-}
-
-/** Persist a subagent's resolved sandbox loadout beside its session file. */
-export function writeSubagentLoadout(sessionFile: string, loadout: SubagentLoadout): void {
-  try {
-    writeFileSync(loadoutSidecarPath(sessionFile), JSON.stringify(loadout), "utf8");
-  } catch {
-    // Best-effort: a missing snapshot only means resume will refuse, never that
-    // it launches unrestricted.
-  }
-}
-
-/** Read a subagent's loadout snapshot, or null if absent/unparseable. */
-export function readSubagentLoadout(sessionFile: string): SubagentLoadout | null {
-  try {
-    const p = loadoutSidecarPath(sessionFile);
-    if (!existsSync(p)) return null;
-    const parsed = JSON.parse(readFileSync(p, "utf8"));
-    if (!parsed || typeof parsed !== "object") return null;
-    return parsed as SubagentLoadout;
-  } catch {
-    return null;
-  }
-}
-
-// ── Name registry ────────────────────────────────────────────────────────────
-// Each spawner session (the top-level pi session, or a worker that spawns its
-// own children) gets a registry mapping a subagent's display name to the
-// session file it ran in. Names are unique per spawner session and persist on
-// disk, so `send_message({ to })` can steer a running subagent or resume
-// a finished one by the same handle — even across a pi restart. The registry
-// lives in the spawner's own artifact dir, which is directly addressable from
-// the spawner's session id (no sessions-tree scan, so resume stays fast).
-
-export interface NameRegistryEntry {
-  /** Absolute path to the subagent's session .jsonl file. */
-  sessionFile: string;
-  /** Canonical session header id (kept for display/lineage). */
-  sessionId: string | null;
-}
-
-export type NameRegistry = Record<string, NameRegistryEntry>;
-
-/** Path of the name registry for a given spawner session's artifact dir. */
-export function nameRegistryPath(artifactDir: string): string {
-  return join(artifactDir, "subagent-registry.json");
-}
-
-/** Read a spawner session's name registry, or {} if absent/corrupt. */
-export function readNameRegistry(artifactDir: string): NameRegistry {
-  try {
-    const p = nameRegistryPath(artifactDir);
-    if (!existsSync(p)) return {};
-    const parsed = JSON.parse(readFileSync(p, "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return parsed as NameRegistry;
-  } catch {
-    return {};
-  }
-}
-
-/**
- * Register (or overwrite) a name → session mapping for a spawner session.
- * Writes atomically (temp file + rename) so a concurrent reader never sees a
- * partial registry.
- */
-export function registerName(
-  artifactDir: string,
-  name: string,
-  entry: NameRegistryEntry,
-): void {
-  try {
-    mkdirSync(artifactDir, { recursive: true });
-    const registry = readNameRegistry(artifactDir);
-    registry[name] = entry;
-    const p = nameRegistryPath(artifactDir);
-    const tmp = `${p}.tmp-${process.pid}-${Math.random().toString(16).slice(2, 8)}`;
-    writeFileSync(tmp, JSON.stringify(registry, null, 2), "utf8");
-    renameSync(tmp, p);
-  } catch {
-    // Best-effort: a failed registration only means resume-by-name won't find
-    // this subagent later; it never breaks the spawn itself.
-  }
-}
-
-/** Resolve a name to its registry entry within a spawner session, or null. */
-export function resolveNameInRegistry(
-  artifactDir: string,
-  name: string,
-): NameRegistryEntry | null {
-  const entry = readNameRegistry(artifactDir)[name];
-  return entry && typeof entry.sessionFile === "string" ? entry : null;
-}
-
 function readEntries(sessionFile: string): SessionEntry[] {
   const raw = readFileSync(sessionFile, "utf8");
   return raw
@@ -270,6 +149,7 @@ function readHeaderId(sessionFile: string): string | null {
 /**
  * Return entries added after `afterLine` (1-indexed count of existing entries).
  */
+
 /**
  * Count the number of entry lines in a session file without parsing each line
  * into an object. Used by the resume path, which only needs the *count* of

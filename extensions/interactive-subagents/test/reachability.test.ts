@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createLiveness, SNAPSHOT_STALLED_AFTER_MS } from "../liveness.ts";
 import { SUBAGENT_STATUS_KINDS, SUBAGENT_STATUS_TRANSITIONS } from "../status.ts";
-import { writeSubagentActivityFile, type SubagentActivityState } from "../activity.ts";
+import { writeSubagentActivityFile } from "../activity-recorder.ts";
+import type { SubagentActivityState } from "../activity-schema.ts";
 
 /**
  * Reachability analysis over the status machine.

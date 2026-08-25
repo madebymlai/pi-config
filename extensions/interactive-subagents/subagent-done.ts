@@ -16,7 +16,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { writeFileSync } from "node:fs";
-import { createSubagentActivityRecorder } from "./activity.ts";
+import { createSubagentActivityRecorder } from "./activity-recorder.ts";
 import { PARENT, registerSendMessage } from "./messaging.ts";
 
 export function shouldMarkUserTookOver(agentStarted: boolean): boolean {

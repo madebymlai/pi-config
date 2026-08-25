@@ -16,12 +16,11 @@
  * only whether a transition is worth waking the parent for, and no caller
  * outside this module has any other use for it.
  */
+import { readSubagentActivityFile, type ActivityReadResult } from "./activity-reader.ts";
 import {
   getSubagentActivityFile,
-  readSubagentActivityFile,
-  type ActivityReadResult,
   type SubagentActivityState,
-} from "./activity.ts";
+} from "./activity-schema.ts";
 import {
   formatElapsedDuration,
   formatTransitionLine,

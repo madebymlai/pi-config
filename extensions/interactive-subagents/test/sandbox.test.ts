@@ -11,7 +11,7 @@ import {
   slugify,
   SUBAGENT_CONTROL_TOOLS,
 } from "../sandbox.ts";
-import type { SubagentLoadout } from "../session.ts";
+import type { SubagentLoadout } from "../loadout.ts";
 
 function withTempDir<T>(fn: (dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "sandbox-"));

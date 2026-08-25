@@ -11,7 +11,7 @@
  * caller maps severity to a theme colour — which is the only part that is
  * genuinely the caller's, since the theme is.
  */
-import type { SessionStats } from "./session.ts";
+import type { SessionStats } from "./transcript.ts";
 
 /** How alarming a usage segment is. The caller picks the colour. */
 export type UsageSeverity = "normal" | "warning" | "critical";

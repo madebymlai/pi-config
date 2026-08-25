@@ -7,7 +7,7 @@ import {
   stripResultPreamble,
   usageSegments,
 } from "../result.ts";
-import type { SessionStats } from "../session.ts";
+import type { SessionStats } from "../transcript.ts";
 
 const NO_STATS: SessionStats = {
   model: null,

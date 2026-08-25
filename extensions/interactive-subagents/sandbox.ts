@@ -17,7 +17,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentConfigDir, paths } from "./paths.ts";
-import type { SubagentLoadout } from "./session.ts";
+import type { SubagentLoadout } from "./loadout.ts";
 import { shellEscape } from "./tmux.ts";
 
 /**

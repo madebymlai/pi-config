@@ -17,21 +17,25 @@ import {
 } from "./support/agent-env.ts";
 
 import {
-  getNewEntries,
   countSessionEntryLines,
-  getSessionId,
-  readNameRegistry,
-  readSubagentLoadout,
-  registerName,
-  resolveNameInRegistry,
-  nameRegistryPath,
-  writeSubagentLoadout,
-  loadoutSidecarPath,
-  type SubagentLoadout,
   findLastAssistantMessage,
+  getNewEntries,
+  getSessionId,
   seedSubagentSessionFile,
   summarizeSessionStats,
-} from "../session.ts";
+} from "../transcript.ts";
+import {
+  loadoutSidecarPath,
+  readSubagentLoadout,
+  writeSubagentLoadout,
+  type SubagentLoadout,
+} from "../loadout.ts";
+import {
+  nameRegistryPath,
+  readNameRegistry,
+  registerName,
+  resolveNameInRegistry,
+} from "../name-registry.ts";
 
 import { shellEscape } from "../tmux.ts";
 import {
@@ -43,12 +47,9 @@ import {
   parseStatusConfig,
   type StatusSnapshot,
 } from "../status.ts";
-import {
-  createSubagentActivityRecorder,
-  getSubagentActivityFile,
-  readSubagentActivityFile,
-  writeSubagentActivityFile,
-} from "../activity.ts";
+import { createSubagentActivityRecorder, writeSubagentActivityFile } from "../activity-recorder.ts";
+import { readSubagentActivityFile } from "../activity-reader.ts";
+import { getSubagentActivityFile } from "../activity-schema.ts";
 import {
   shouldMarkUserTookOver,
   shouldAutoExitOnAgentEnd,
