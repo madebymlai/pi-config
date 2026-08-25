@@ -28,29 +28,23 @@ const DEFAULT_COUNT = 8;
 const MAX_COUNT = 25;
 
 /**
- * Exa's category taxonomy. Validated here because the API does NOT validate it:
- * an unrecognised category is silently ignored and the search runs unfiltered,
- * so a typo would degrade results with no error. Failing loudly is the whole
- * point of this list.
+ * Exa's six documented categories, each backed by its own curated index
+ * (company pages, people, scholarly publications, news, personal sites, SEC
+ * filings). `publication` is the one for research papers, preprints and
+ * journal articles.
  *
- * The first six are Exa's published set. "github" is undocumented but real:
- * against a baseline of wikipedia/science.org it returns only github.com, while
- * an unrecognised category leaves that baseline untouched. Re-check it if
- * results ever stop looking category-shaped.
- *
- * "research paper" is deliberately absent despite also working — it returns
- * results identical to "publication", which the docs already define as covering
- * research papers, preprints and journal articles. Two names for one filter is
- * a worse interface than one.
+ * Validated here because the API does NOT validate it: an unrecognised
+ * category is silently accepted and the search runs unfiltered, with no error
+ * and full billing. This list is the only thing that turns a typo into a
+ * visible failure rather than quietly worse results.
  */
 const CATEGORIES = [
 	"company",
+	"people",
 	"publication",
 	"news",
-	"github",
 	"personal site",
 	"financial report",
-	"people",
 ] as const;
 
 interface SearchResult {
@@ -91,7 +85,11 @@ function loadApiKey(): string | null {
 	return null;
 }
 
-/** Reduce "https://example.com/docs/" and "site:example.com" alike to "example.com". */
+/**
+ * Reduce "https://example.com/docs/" and "site:example.com" alike to a bare
+ * hostname. Exa matches subdomains, so whatever host survives here also covers
+ * everything beneath it.
+ */
 function normalizeDomain(value: string): string | undefined {
 	let domain = value.trim().replace(/^site:/i, "").trim();
 	if (!domain) return undefined;
@@ -205,7 +203,8 @@ export default function (pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Write the query as a description of the page you want ('blog post comparing X and Y performance'), not as keywords. This is a neural index, so Google operators such as quotes, minus signs, and site: do nothing.",
 			"Use one web_search tool call per search angle instead of batching multiple searches into one call.",
-			"Prefer the category filter over wording the query to imply a source type. It is a strong filter: the same query under 'github' returns only repositories, under 'publication' only journals, under 'company' only vendor sites.",
+			"Prefer the category filter over wording the query to imply a source type. It is a hard filter, not a hint: the same query under 'publication' returns only journals, under 'company' only vendor sites.",
+			"Do not combine category with includeDomains. Some categories back onto their own curated index and reject domain restrictions outright, so pick one or the other.",
 			"Results are not billed individually, but they do consume context. Raise count when a search needs breadth; lower it when only the top hit matters.",
 		],
 
@@ -217,12 +216,13 @@ export default function (pi: ExtensionAPI) {
 			includeDomains: Type.Optional(
 				Type.Array(Type.String(), {
 					description:
-						"Restrict results to these domains, such as example.com or a full URL.",
+						"Restrict results to these domains. Subdomains are included, so 'example.com' also matches docs.example.com; pass the bare domain rather than a specific host to cover a whole site.",
 				}),
 			),
 			excludeDomains: Type.Optional(
 				Type.Array(Type.String(), {
-					description: "Drop results from these domains.",
+					description:
+						"Drop results from these domains. Subdomains are included, so 'example.com' also drops m.example.com.",
 				}),
 			),
 			category: Type.Optional(
@@ -230,7 +230,7 @@ export default function (pi: ExtensionAPI) {
 					CATEGORIES.map((c) => Type.Literal(c)),
 					{
 						description:
-							"Restrict to a kind of page: 'publication' for papers, preprints and journal articles, 'github' for repositories and source, 'news' for reporting, 'company' for vendor pages.",
+							"Restrict to a kind of page: 'publication' for papers, preprints and journal articles, 'news' for reporting, 'company' for vendor pages, 'people' for profiles, 'financial report' for SEC filings.",
 					},
 				),
 			),
