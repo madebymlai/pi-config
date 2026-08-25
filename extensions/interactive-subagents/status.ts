@@ -1,14 +1,9 @@
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { paths } from "./paths.ts";
 
 export const DEFAULT_STATUS_LINE_LIMIT = 4;
 export const MAX_STATUS_NAME_LENGTH = 72;
 export const MAX_STATUS_LINE_LENGTH = 120;
-
-const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_STATUS_CONFIG_PATH = join(PACKAGE_ROOT, "config.json");
-const STATUS_CONFIG_EXAMPLE_PATH = join(PACKAGE_ROOT, "config.json.example");
 
 /**
  * The status machine's nodes, S0 first. The list is the source of truth and the
@@ -138,8 +133,8 @@ function readStatusConfigFile(configPath: string, examplePath: string): { source
 }
 
 export function loadStatusConfig(
-  configPath = DEFAULT_STATUS_CONFIG_PATH,
-  examplePath = STATUS_CONFIG_EXAMPLE_PATH,
+  configPath = paths.statusConfig,
+  examplePath = paths.statusConfigExample,
 ): StatusConfig {
   const { sourcePath, rawConfig } = readStatusConfigFile(configPath, examplePath);
 

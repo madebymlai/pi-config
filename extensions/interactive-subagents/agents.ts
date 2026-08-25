@@ -13,11 +13,8 @@
  * shadowing earlier ones by name.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
-
-const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url));
+import { join } from "node:path";
+import { getAgentConfigDir, paths } from "./paths.ts";
 
 export type SubagentSessionMode = "standalone" | "lineage-only" | "fork";
 
@@ -55,12 +52,8 @@ export interface ListedAgentDefinition extends AgentDefinition {
  * be a pass-through. The sandbox imports it from here to resolve extension
  * paths under the agent dir.
  */
-export function getAgentConfigDir() {
-  return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-}
-
 function getBundledAgentsDir(): string {
-  return join(SUBAGENTS_DIR, "agents");
+  return paths.bundledAgents;
 }
 
 function getFrontmatterValue(frontmatter: string, key: string): string | undefined {
@@ -140,13 +133,13 @@ export function listAgents() {
 
 function loadAgentDefaults(agentName: string): AgentDefaults | null {
   const configDir = getAgentConfigDir();
-  const paths = [
+  const candidates = [
     join(process.cwd(), ".pi", "agents", `${agentName}.md`),
     join(configDir, "agents", `${agentName}.md`),
     join(getBundledAgentsDir(), `${agentName}.md`),
   ];
 
-  for (const p of paths) {
+  for (const p of candidates) {
     if (!existsSync(p)) continue;
     const parsed = parseAgentDefinition(readFileSync(p, "utf8"), agentName);
     if (parsed) return parsed;

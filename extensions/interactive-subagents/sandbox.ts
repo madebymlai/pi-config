@@ -15,14 +15,10 @@
  * can assert on a result without building a container for it first.
  */
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { getAgentConfigDir } from "./agents.ts";
+import { dirname, join } from "node:path";
+import { getAgentConfigDir, paths } from "./paths.ts";
 import type { SubagentLoadout } from "./session.ts";
 import { shellEscape } from "./tmux.ts";
-
-const EXTENSION_DIR = dirname(fileURLToPath(import.meta.url));
-const SIBLING_EXTENSIONS_DIR = resolve(EXTENSION_DIR, "..");
 
 /**
  * Tools every subagent keeps regardless of how tightly its role restricts tools.
@@ -84,7 +80,7 @@ export function slugify(name: string, fallback = "subagent") {
 export function getToolExtensionPath(tool: string): string | undefined {
   if (BUILTIN_TOOLS.has(tool)) return undefined;
   if (tool === "safe_bash") {
-    const safeBash = join(EXTENSION_DIR, "tools", "safe-bash.ts");
+    const safeBash = paths.toolExtension("safe-bash.ts");
     return existsSync(safeBash) ? safeBash : undefined;
   }
   const map: Record<string, readonly string[]> = {
@@ -105,7 +101,7 @@ export function getToolExtensionPath(tool: string): string | undefined {
   // it, so look where this file actually lives before the agent dir.
   const segments = map[tool];
   if (segments) {
-    for (const base of [SIBLING_EXTENSIONS_DIR, join(getAgentConfigDir(), "extensions")]) {
+    for (const base of [paths.siblingExtensions, join(getAgentConfigDir(), "extensions")]) {
       const candidate = join(base, ...segments);
       if (existsSync(candidate)) return candidate;
     }

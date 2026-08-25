@@ -21,9 +21,9 @@ import {
   usageSegments,
   type UsageSeverity,
 } from "./result.ts";
+import { getAgentConfigDir, paths } from "./paths.ts";
 import { computeToolAllowlist, promptArgs, sandboxArgs, slugify } from "./sandbox.ts";
 import {
-  getAgentConfigDir,
   listAgents,
   resolveAgentLaunch,
   RESUME_LAUNCH,
@@ -93,9 +93,6 @@ const SPAWN_GUIDANCE =
   "work is always wasted. Never state a result you have not been given. " +
   "After spawning, end your turn or start other independent work, including further sub-agents " +
   "in parallel.";
-
-const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url));
-// <extensions>/interactive-subagents -> <extensions>
 
 // Survive /reload: clear timers and abort poll loops from the previous module load.
 // /reload re-imports this file, giving fresh module-level state, but closures from
@@ -561,7 +558,7 @@ async function launchSubagent(
   const parts: string[] = ["pi"];
   parts.push("--session", shellEscape(subagentSessionFile));
 
-  const subagentDonePath = join(SUBAGENTS_DIR, "subagent-done.ts");
+  const subagentDonePath = paths.childEntry;
   parts.push("-e", shellEscape(subagentDonePath));
 
   // Resolve the config dir the child sees: a target-local .pi/agent/ wins,
@@ -1010,7 +1007,7 @@ function createChildTransports(
       const parts = ["pi", "--session", shellEscape(sessionPath)];
 
       // Load subagent-done extension so the agent can self-terminate if needed
-      const subagentDonePath = join(SUBAGENTS_DIR, "subagent-done.ts");
+      const subagentDonePath = paths.childEntry;
       parts.push("-e", shellEscape(subagentDonePath));
 
       const sessionId = ctx.sessionManager.getSessionId();
