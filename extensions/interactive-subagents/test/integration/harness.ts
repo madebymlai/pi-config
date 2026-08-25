@@ -17,6 +17,7 @@ import {
   rmSync,
   existsSync,
   readFileSync,
+  writeFileSync,
   unlinkSync,
 } from "node:fs";
 import { join, resolve, dirname } from "node:path";
@@ -67,8 +68,15 @@ const EXTENSION_SOURCE = join(PROJECT_ROOT, "index.ts");
 
 // ── Configuration ──
 
-/** Model used for integration tests. Override with PI_TEST_MODEL env var. */
-export const TEST_MODEL = process.env.PI_TEST_MODEL ?? "anthropic/claude-haiku-4-5";
+/**
+ * Model for every pi session these tests start, parent and subagent alike.
+ * Override with PI_TEST_MODEL.
+ *
+ * Defaults to the model this repo's own agent roles use. It used to default to
+ * an anthropic model that nothing here runs, so the suite failed out of the box
+ * on a missing key that was never needed.
+ */
+export const TEST_MODEL = process.env.PI_TEST_MODEL ?? "deepseek/deepseek-v4-flash";
 
 /** Per-test timeout in ms. Override with PI_TEST_TIMEOUT env var. */
 export const PI_TIMEOUT = Number(process.env.PI_TEST_TIMEOUT ?? "120000");
@@ -135,12 +143,22 @@ export function createTestEnv(): TestEnv {
   const agentsDir = join(dir, ".pi", "agents");
   mkdirSync(agentsDir, { recursive: true });
 
-  // Copy test agent definitions into the project-local agents dir
+  // Copy the test agent definitions into the project-local agents dir,
+  // retargeting each one at TEST_MODEL.
+  //
+  // A subagent's model comes from its own role frontmatter, not from the
+  // parent's --model, so without this rewrite PI_TEST_MODEL would only move the
+  // parent and every child would keep whatever the checked-in role happened to
+  // name. That is exactly how a stale anthropic default survived here.
   if (existsSync(TEST_AGENTS_SRC)) {
     for (const file of readdirSync(TEST_AGENTS_SRC)) {
-      if (file.endsWith(".md")) {
-        cpSync(join(TEST_AGENTS_SRC, file), join(agentsDir, file));
-      }
+      if (!file.endsWith(".md")) continue;
+      const definition = readFileSync(join(TEST_AGENTS_SRC, file), "utf8");
+      writeFileSync(
+        join(agentsDir, file),
+        definition.replace(/^model:.*$/m, `model: ${TEST_MODEL}`),
+        "utf8",
+      );
     }
   }
 
