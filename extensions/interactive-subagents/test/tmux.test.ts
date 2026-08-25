@@ -1,6 +1,14 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -144,6 +152,25 @@ describe("spawn/tmux.ts", () => {
         write(dir, "run-me");
         assert.equal(statSync(join(dir, "cmd.sh")).mode & 0o755, 0o755);
       });
+    });
+
+    it("picks its own path under the temp dir when the caller gives none", () => {
+      // Callers usually pass a stable path under session artifacts so the
+      // invocation survives for debugging, but the default has to work too.
+      const defaultDir = join(tmpdir(), "pi-subagent-scripts");
+      const before = new Set(existsSync(defaultDir) ? readdirSync(defaultDir) : []);
+
+      try {
+        sendLongCommand("%1", "run-me");
+      } catch {
+        // Sending needs tmux; choosing a path and writing the file does not.
+      }
+
+      const written = readdirSync(defaultDir).filter((name) => !before.has(name));
+      assert.equal(written.length, 1, "expected exactly one script to be written");
+      assert.match(written[0], /^cmd-\d+-[0-9a-f]+\.sh$/, "named so concurrent spawns cannot collide");
+      assert.match(readFileSync(join(defaultDir, written[0]), "utf8"), /run-me/);
+      rmSync(join(defaultDir, written[0]), { force: true });
     });
 
     it("creates the directory the caller asked for", () => {
