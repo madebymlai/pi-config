@@ -12,6 +12,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { renderSubagentWidget } from "./widget.ts";
+import { describeRefusal, refuseSpawn } from "./spawn-guard.ts";
 import {
   describeResult,
   fallbackSummary,
@@ -64,7 +65,6 @@ import {
 } from "./status.ts";
 import { createLiveness, getSubagentActivityFile, type SubagentLiveness } from "./liveness.ts";
 import {
-  PARENT,
   registerSendMessage,
   type Delivery,
   type MessagingContext,
@@ -78,6 +78,19 @@ const USAGE_TONE = {
   warning: "warning",
   critical: "error",
 } as const satisfies Record<UsageSeverity, string>;
+
+/**
+ * What the orchestrator is told about spawning, used verbatim as both the tool
+ * description and its prompt snippet. It was written out twice, identically;
+ * editing one and not the other silently changed what the model was told.
+ */
+const SPAWN_GUIDANCE =
+  "Spawn a sub-agent in a dedicated terminal multiplexer pane. " +
+  "This is a fire-and-forget async tool: the call returns immediately with only an acknowledgement. " +
+  "When the sub-agent finishes, the harness AUTOMATICALLY delivers its result as a steer message that wakes you up and starts a new turn — you do not need to do anything to receive it. " +
+  "DO NOT write polling loops, sleep/wait commands, tail/watch scripts, or repeatedly read session/log files to detect completion. DO NOT call subagents_list or any other tool to 'check' status. All of that is wasted work — the harness handles delivery for you. " +
+  "DO NOT fabricate, assume, or summarize results after calling this tool. " +
+  "After spawning, either end your turn immediately, or work on other independent tasks (including spawning more subagents in parallel). The harness will wake you with the result when it is ready.";
 
 const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url));
 // <extensions>/interactive-subagents -> <extensions>
@@ -170,18 +183,6 @@ function getShellReadyDelayMs(): number {
   const raw = process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS?.trim();
   const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 500;
-}
-
-function muxUnavailableResult() {
-  return {
-    content: [
-      {
-        type: "text" as const,
-        text: `Subagents require tmux. ${muxSetupHint()}`,
-      },
-    ],
-    details: { error: "tmux not available" },
-  };
 }
 
 /** The same refusal, shaped for send_message's delivery outcomes. */
@@ -1119,113 +1120,25 @@ export default function subagentsExtension(pi: ExtensionAPI) {
   pi.registerTool({
       name: "subagent",
       label: "Subagent",
-      description:
-        "Spawn a sub-agent in a dedicated terminal multiplexer pane. " +
-        "This is a fire-and-forget async tool: the call returns immediately with only an acknowledgement. " +
-        "When the sub-agent finishes, the harness AUTOMATICALLY delivers its result as a steer message that wakes you up and starts a new turn — you do not need to do anything to receive it. " +
-        "DO NOT write polling loops, sleep/wait commands, tail/watch scripts, or repeatedly read session/log files to detect completion. DO NOT call subagents_list or any other tool to 'check' status. All of that is wasted work — the harness handles delivery for you. " +
-        "DO NOT fabricate, assume, or summarize results after calling this tool. " +
-        "After spawning, either end your turn immediately, or work on other independent tasks (including spawning more subagents in parallel). The harness will wake you with the result when it is ready.",
-      promptSnippet:
-        "Spawn a sub-agent in a dedicated terminal multiplexer pane. " +
-        "This is a fire-and-forget async tool: the call returns immediately with only an acknowledgement. " +
-        "When the sub-agent finishes, the harness AUTOMATICALLY delivers its result as a steer message that wakes you up and starts a new turn — you do not need to do anything to receive it. " +
-        "DO NOT write polling loops, sleep/wait commands, tail/watch scripts, or repeatedly read session/log files to detect completion. DO NOT call subagents_list or any other tool to 'check' status. All of that is wasted work — the harness handles delivery for you. " +
-        "DO NOT fabricate, assume, or summarize results after calling this tool. " +
-        "After spawning, either end your turn immediately, or work on other independent tasks (including spawning more subagents in parallel). The harness will wake you with the result when it is ready.",
+      description: SPAWN_GUIDANCE,
+      promptSnippet: SPAWN_GUIDANCE,
       parameters: SubagentParams,
 
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-        // Prevent self-spawning (e.g. planner spawning another planner)
-        const currentAgent = process.env.PI_SUBAGENT_AGENT;
-        if (params.agent && currentAgent && params.agent === currentAgent) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: `You are the ${currentAgent} agent — do not start another ${currentAgent}. You were spawned to do this work yourself. Complete the task directly.`,
-              },
-            ],
-            details: { error: "self-spawn blocked" },
-          };
-        }
-
-        // Strict whitelist at every depth. The caller's permitted set is:
-        //   • a restricted subagent (PI_SUBAGENT_ALLOWED) → only its pinned agents;
-        //   • a top-level session → every discoverable agent, i.e. exactly what
-        //     `subagents_list` shows.
-        // Every spawn must name an agent in that set. Without this guard a
-        // missing or unknown `agent` silently launches an unrestricted,
-        // full-toolset child.
-        const permittedAgents = SUBAGENT_ALLOWLIST
-          ? [...SUBAGENT_ALLOWLIST]
-          : listAgents().map((a) => a.name);
-        const permittedSet = new Set(permittedAgents);
-        const permittedList = permittedAgents.join(", ") || "(none)";
-
-        if (!params.agent) {
-          return {
-            content: [
-              {
-                type: "text",
-                text:
-                  `You must specify which agent to spawn via the "agent" field. ` +
-                  `Available agents: ${permittedList}.`,
-              },
-            ],
-            details: { error: "agent required" },
-          };
-        } else if (!permittedSet.has(params.agent)) {
-          return {
-            content: [
-              {
-                type: "text",
-                text:
-                  `You may not spawn the "${params.agent}" agent — it is not ` +
-                  `${SUBAGENT_ALLOWLIST ? "in your allowlist" : "a known agent"}. ` +
-                  `Available agents: ${permittedList}.`,
-              },
-            ],
-            details: {
-              error: SUBAGENT_ALLOWLIST ? "agent not in allowlist" : "unknown agent",
-            },
-          };
-        }
-
-        // `parent` addresses the spawner in send_message. Letting a subagent
-        // hold it would make every upward message ambiguous, so refuse rather
-        // than silently rename and leave the caller addressing a name it did
-        // not choose. uniqueRunningName reserves it on the defaulting path too.
-        if (params.name?.trim() === PARENT) {
-          return {
-            content: [
-              {
-                type: "text",
-                text:
-                  `"${PARENT}" is reserved: send_message uses it to address the agent that ` +
-                  `spawned you. Name this subagent something else.`,
-              },
-            ],
-            details: { error: "reserved name" },
-          };
-        }
-
-        // Validate prerequisites (need mux + a session file to derive the
-        // artifact dir that hosts this session's name registry).
-        if (!isMuxAvailable()) {
-          return muxUnavailableResult();
-        }
-
-        if (!ctx.sessionManager.getSessionFile()) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: "Error: no session file. Start pi with a persistent session to use subagents.",
-              },
-            ],
-            details: { error: "no session file" },
-          };
+        // Every reason a spawn may be refused, in one ordered decision. The
+        // environment is resolved here because refuseSpawn reads nothing itself.
+        const refusal = refuseSpawn(params, {
+          currentAgent: process.env.PI_SUBAGENT_AGENT,
+          permitted: () =>
+            SUBAGENT_ALLOWLIST ? [...SUBAGENT_ALLOWLIST] : listAgents().map((a) => a.name),
+          restricted: !!SUBAGENT_ALLOWLIST,
+          muxAvailable: isMuxAvailable,
+          hasSessionFile: () => !!ctx.sessionManager.getSessionFile(),
+          setupHint: muxSetupHint,
+        });
+        if (refusal) {
+          const { text, error } = describeRefusal(refusal);
+          return { content: [{ type: "text" as const, text }], details: { error } };
         }
 
         // This spawner session's artifact dir hosts its persistent name
