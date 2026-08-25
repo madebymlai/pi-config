@@ -1101,21 +1101,21 @@ describe("subagent discovery", () => {
   it("resolveEffectiveInteractive defaults to the inverse of auto-exit", () => {
     // Autonomous agents (auto-exit: true) are NOT interactive — parent gets stall pings.
     assert.equal(
-      testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, { autoExit: true }),
+      testApi.resolveEffectiveInteractive({ autoExit: true }),
       false,
     );
     // Agents without auto-exit ARE interactive — parent does not receive status transition pings.
     assert.equal(
-      testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, { autoExit: false }),
+      testApi.resolveEffectiveInteractive({ autoExit: false }),
       true,
     );
     assert.equal(
-      testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, {}),
+      testApi.resolveEffectiveInteractive({}),
       true,
     );
     // Bare spawn with no agent defs (e.g. /iterate fork) is interactive by default.
     assert.equal(
-      testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, null),
+      testApi.resolveEffectiveInteractive(null),
       true,
     );
   });
@@ -1123,18 +1123,12 @@ describe("subagent discovery", () => {
   it("resolveEffectiveInteractive honors explicit frontmatter over the auto-exit default", () => {
     // Autonomous agent that still wants to be treated as interactive.
     assert.equal(
-      testApi.resolveEffectiveInteractive(
-        { name: "A", task: "T" },
-        { autoExit: true, interactive: true },
-      ),
+      testApi.resolveEffectiveInteractive({ autoExit: true, interactive: true }),
       true,
     );
     // Non-auto-exit agent that opts back into stall pings.
     assert.equal(
-      testApi.resolveEffectiveInteractive(
-        { name: "A", task: "T" },
-        { interactive: false },
-      ),
+      testApi.resolveEffectiveInteractive({ interactive: false }),
       false,
     );
   });
@@ -1144,7 +1138,7 @@ describe("subagent discovery", () => {
       const defs = testApi.loadAgentDefaults(name);
       assert.ok(defs, `expected bundled agent ${name} to be discoverable`);
       assert.equal(
-        testApi.resolveEffectiveInteractive({ name, task: "" }, defs),
+        testApi.resolveEffectiveInteractive(defs),
         false,
         `${name} should resolve as non-interactive (autonomous, auto-exit)`,
       );
@@ -1226,26 +1220,26 @@ describe("subagent discovery", () => {
   });
 
   it("resolves session mode from frontmatter (standalone default)", () => {
-    assert.equal(testApi.resolveEffectiveSessionMode({ name: "A", task: "T" }, null), "standalone");
+    assert.equal(testApi.resolveEffectiveSessionMode(null), "standalone");
     assert.equal(
-      testApi.resolveEffectiveSessionMode({ name: "A", task: "T" }, { sessionMode: "lineage-only" }),
+      testApi.resolveEffectiveSessionMode({ sessionMode: "lineage-only" }),
       "lineage-only",
     );
     assert.equal(
-      testApi.resolveEffectiveSessionMode({ name: "A", task: "T" }, { sessionMode: "fork" }),
+      testApi.resolveEffectiveSessionMode({ sessionMode: "fork" }),
       "fork",
     );
   });
 
   it("resolves launch behavior for standalone, lineage-only, and fork modes", () => {
-    assert.deepEqual(testApi.resolveLaunchBehavior({ name: "A", task: "T" }, null), {
+    assert.deepEqual(testApi.resolveLaunchBehavior(null), {
       sessionMode: "standalone",
       seededSessionMode: null,
       inheritsConversationContext: false,
       taskDelivery: "artifact",
     });
     assert.deepEqual(
-      testApi.resolveLaunchBehavior({ name: "A", task: "T" }, { sessionMode: "lineage-only" }),
+      testApi.resolveLaunchBehavior({ sessionMode: "lineage-only" }),
       {
         sessionMode: "lineage-only",
         seededSessionMode: "lineage-only",
@@ -1254,7 +1248,7 @@ describe("subagent discovery", () => {
       },
     );
     assert.deepEqual(
-      testApi.resolveLaunchBehavior({ name: "A", task: "T" }, { sessionMode: "fork" }),
+      testApi.resolveLaunchBehavior({ sessionMode: "fork" }),
       {
         sessionMode: "fork",
         seededSessionMode: "fork",

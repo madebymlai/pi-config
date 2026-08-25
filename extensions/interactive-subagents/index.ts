@@ -413,23 +413,17 @@ function getDefaultSessionDirFor(cwd: string, agentDir: string): string {
   return sessionDir;
 }
 
-function resolveEffectiveSessionMode(
-  params: Static<typeof SubagentParams>,
-  agentDefs: AgentDefaults | null,
-): SubagentSessionMode {
+function resolveEffectiveSessionMode(agentDefs: AgentDefaults | null): SubagentSessionMode {
   return agentDefs?.sessionMode ?? "standalone";
 }
 
-function resolveLaunchBehavior(
-  params: Static<typeof SubagentParams>,
-  agentDefs: AgentDefaults | null,
-): {
+function resolveLaunchBehavior(agentDefs: AgentDefaults | null): {
   sessionMode: SubagentSessionMode;
   seededSessionMode: "lineage-only" | "fork" | null;
   inheritsConversationContext: boolean;
   taskDelivery: "direct" | "artifact";
 } {
-  const sessionMode = resolveEffectiveSessionMode(params, agentDefs);
+  const sessionMode = resolveEffectiveSessionMode(agentDefs);
   const inheritsConversationContext = sessionMode === "fork";
   return {
     sessionMode,
@@ -449,10 +443,7 @@ function resolveLaunchBehavior(
  *      woken on stall/recovery transitions. Agents that don't auto-exit are
  *      driven by the user in their own pane (worker) and stall pings are noise.
  */
-function resolveEffectiveInteractive(
-  _params: Static<typeof SubagentParams>,
-  agentDefs: AgentDefaults | null,
-): boolean {
+function resolveEffectiveInteractive(agentDefs: AgentDefaults | null): boolean {
   if (agentDefs?.interactive != null) return agentDefs.interactive;
   return !(agentDefs?.autoExit ?? false);
 }
@@ -1206,7 +1197,7 @@ async function launchSubagent(
   const effectiveTools = agentDefs?.tools;
   const effectiveSkills = agentDefs?.skills;
   const effectiveThinking = agentDefs?.thinking;
-  const effectiveInteractive = resolveEffectiveInteractive(params, agentDefs);
+  const effectiveInteractive = resolveEffectiveInteractive(agentDefs);
 
   const sessionFile = ctx.sessionManager.getSessionFile();
   if (!sessionFile) throw new Error("No session file");
@@ -1237,7 +1228,7 @@ async function launchSubagent(
     await new Promise<void>((resolve) => setTimeout(resolve, getShellReadyDelayMs()));
   }
 
-  const launchBehavior = resolveLaunchBehavior(params, agentDefs);
+  const launchBehavior = resolveLaunchBehavior(agentDefs);
 
   if (launchBehavior.seededSessionMode) {
     seedSubagentSessionFile({
@@ -1860,10 +1851,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         //   • a restricted subagent (PI_SUBAGENT_ALLOWED) → only its pinned agents;
         //   • a top-level session → every discoverable agent, i.e. exactly what
         //     `subagents_list` shows.
-        // Every spawn must name an agent in that set. The lone exception is a
-        // top-level `fork: true` clone, which has no role and inherits the
-        // caller's own already-trusted toolset. Without this guard a missing or
-        // unknown `agent` silently launches an unrestricted, full-toolset child.
+        // Every spawn must name an agent in that set. Without this guard a
+        // missing or unknown `agent` silently launches an unrestricted,
+        // full-toolset child.
         const permittedAgents = SUBAGENT_ALLOWLIST
           ? [...SUBAGENT_ALLOWLIST]
           : discoverAgentDefinitions().map((a) => a.name);
