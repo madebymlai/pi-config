@@ -1,0 +1,16 @@
+{
+  "name": "pi-bash-guard",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "shell-quote": "^1.8.3"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@types/shell-quote": "^1.7.5"
+  }
+}

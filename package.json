@@ -18,8 +18,9 @@
   "type": "module",
   "scripts": {
     "check": "tsc --noEmit",
-    "format": "prettier --write \"extensions/ask-user/**/*.{ts,cjs}\" \"*.json\" && oxfmt --write extensions/subagent",
-    "format:check": "prettier --check \"extensions/ask-user/**/*.{ts,cjs}\" \"*.json\" && oxfmt --check extensions/subagent",
+    "check:load": "bun scripts/load-check.ts",
+    "format": "prettier --write \"*.json\" && oxfmt --write extensions/subagent",
+    "format:check": "prettier --check \"*.json\" && oxfmt --check extensions/subagent",
     "lint": "oxlint extensions/subagent --ignore-pattern test",
     "test": "bun test extensions/subagent"
   }
