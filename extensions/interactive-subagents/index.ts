@@ -2,6 +2,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { Box, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import {
+  readSubagentStatusDetails,
+  renderSubagentStatus,
+} from "./render/subagent-status.ts";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -1448,30 +1452,18 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
   // ── subagent_status message renderer ──
   pi.registerMessageRenderer("subagent_status", (message, options, theme) => {
-    const details = message.details as any;
-    const lines = Array.isArray(details?.lines) ? details.lines : [];
-    const overflow = typeof details?.overflow === "number" ? details.overflow : 0;
-    if (lines.length === 0 && overflow === 0) return undefined;
+    const details = readSubagentStatusDetails(message.details);
+    if (!details) return undefined;
 
     return {
       invalidate() {},
       render(width: number): string[] {
-        const lineWidth = Math.max(0, width - 6);
-        const contentLines = [
-          `${theme.fg("accent", "•")} ${theme.fg("toolTitle", theme.bold("Subagent status"))}`,
-          ...lines.map((line: string) => theme.fg("dim", truncateToWidth(line, lineWidth))),
-        ];
-
-        if (overflow > 0) {
-          contentLines.push(theme.fg("muted", `+${overflow} more running.`));
-        }
-        if (!options.expanded) {
-          contentLines.push(theme.fg("muted", keyHint("app.tools.expand", "to expand")));
-        }
-
-        const box = new Box(1, 1, (text: string) => theme.bg("customMessageBg", text));
-        box.addChild(new Text(contentLines.join("\n"), 0, 0));
-        return ["", ...box.render(width)];
+        return renderSubagentStatus(details, {
+          theme,
+          expandHint: () => keyHint("app.tools.expand", "to expand"),
+          expanded: options.expanded,
+          width,
+        });
       },
     };
   });
