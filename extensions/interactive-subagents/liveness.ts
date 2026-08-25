@@ -71,7 +71,7 @@ interface SubagentStatusState {
   snapshotState: StatusSnapshotState;
   snapshotProblemSinceMs: number | null;
   snapshotError: string | null;
-  /** Written only by transitionTo. See the note there. */
+  /** Written only by advance. See the note there. */
   readonly currentKind: SubagentStatusKind;
 }
 
@@ -81,18 +81,27 @@ function snapshotProblemLabel(snapshotState: StatusSnapshotState): string | null
 }
 
 /**
- * The only transition. Apart from createStatusState establishing S0, this is the
- * one place currentKind is ever written, and since the state type does not leave
- * this module there is no way to route around it.
+ * The only transition, and it takes no destination.
  *
- * There is deliberately no adjacency check here. The transition relation was
- * measured (test/reachability.test.ts) and it is complete: every kind can legally
- * follow every kind, so a table of legal pairs would forbid nothing while adding
- * a second place to keep in sync. Reachability is the property worth enforcing;
- * adjacency is not.
+ * A status is not something a caller picks: it is whatever the current evidence
+ * classifies to. Taking the kind as a parameter would make this a setter wearing
+ * a better name, since any caller could name any kind and it would be written.
+ * Deriving it here means the wrong status is not something you can ask for.
+ *
+ * That also settles the adjacency question. A table of legal pairs was measured
+ * and came back complete (test/reachability.test.ts), so it would have forbidden
+ * nothing. With no destination parameter an illegal edge is not expressible at
+ * all, which is the stronger result and costs nothing to keep in sync.
+ *
+ * Apart from createStatusState establishing S0, this is the only place
+ * currentKind is written, and the state type does not leave this module.
  */
-function transitionTo(state: SubagentStatusState, kind: SubagentStatusKind): SubagentStatusState {
-  return kind === state.currentKind ? state : { ...state, currentKind: kind };
+function advance(state: SubagentStatusState, now: number) {
+  const snapshot = classifyStatus(state, now);
+  return {
+    snapshot,
+    state: snapshot.kind === state.currentKind ? state : { ...state, currentKind: snapshot.kind },
+  };
 }
 
 function createStatusState(params: { startTimeMs: number }): SubagentStatusState {
@@ -207,7 +216,7 @@ function forceStatusAfterInterrupt(state: SubagentStatusState, now: number): Sub
     snapshotError: null,
   };
 
-  return transitionTo(interrupted, "waiting");
+  return advance(interrupted, now).state;
 }
 
 function classifyProblemState(state: SubagentStatusState, now: number): Pick<StatusSnapshot, "kind" | "statusLabel"> {
@@ -299,7 +308,7 @@ function advanceStatusState(
   snapshot: StatusSnapshot;
   transition: SubagentStatusTransition;
 } {
-  const snapshot = classifyStatus(state, now);
+  const { snapshot, state: nextState } = advance(state, now);
   const transition =
     state.currentKind !== "stalled" && snapshot.kind === "stalled"
       ? "stalled"
@@ -307,11 +316,7 @@ function advanceStatusState(
         ? "recovered"
         : null;
 
-  return {
-    snapshot,
-    transition,
-    nextState: transitionTo(state, snapshot.kind),
-  };
+  return { snapshot, transition, nextState };
 }
 
 export interface SubagentLiveness {
