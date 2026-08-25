@@ -5,8 +5,25 @@
  * the seam these suites test through, so this lives in one place rather than
  * being re-declared per file.
  */
+/** What every tool's execute resolves to, so tests can read it without casting. */
+export interface RecordedToolResult {
+  content: Array<{ type: string; text: string }>;
+  details?: any;
+}
+
+/**
+ * A tool as the mock recorded it. Loose everywhere except `execute`, whose
+ * return type is what tests actually assert on: left as `any` it infers back to
+ * `unknown` through an awaited generic and every assertion needs a cast.
+ */
+export interface RecordedTool {
+  name: string;
+  execute(...args: any[]): Promise<RecordedToolResult>;
+  [key: string]: any;
+}
+
 export function createMockExtensionApi() {
-  const registeredTools: Array<any> = [];
+  const registeredTools: RecordedTool[] = [];
   const registeredCommands: Array<any> = [];
   const registeredMessageRenderers: Array<any> = [];
   const sentUserMessages: string[] = [];
@@ -19,7 +36,7 @@ export function createMockExtensionApi() {
     sentMessages,
     api: {
       on() {},
-      registerTool(tool: any) {
+      registerTool(tool: RecordedTool) {
         registeredTools.push(tool);
       },
       registerCommand(name: string, command: any) {

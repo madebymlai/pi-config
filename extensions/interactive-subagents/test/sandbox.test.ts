@@ -29,7 +29,6 @@ const BARE: SubagentLoadout = {
   thinking: null,
   systemPromptMode: null,
   identity: null,
-  spawnable: null,
   autoExit: false,
   cwd: null,
   agentDir: null,

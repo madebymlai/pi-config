@@ -10,6 +10,5 @@
     "types": ["node"],
     "verbatimModuleSyntax": true
   },
-  "include": ["extensions/**/*.ts"],
-  "exclude": ["extensions/*/test/**"]
+  "include": ["extensions/**/*.ts"]
 }

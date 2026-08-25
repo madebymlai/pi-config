@@ -17,6 +17,8 @@
     "format": "prettier --write \"*.json\"",
     "format:check": "prettier --check \"*.json\"",
     "lint": "oxlint extensions --ignore-pattern \"**/test/**\" --ignore-pattern \"**/tests/**\"",
-    "test": "npm --prefix extensions/interactive-subagents test"
+    "test": "npm --prefix extensions/interactive-subagents test",
+    "test:all": "npm --prefix extensions/interactive-subagents run test:all",
+    "verify": "npm run check && npm run lint && npm run test:all && npm run check:load"
   }
 }

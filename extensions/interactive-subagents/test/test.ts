@@ -1222,6 +1222,7 @@ describe("subagent-done.ts", () => {
           assert.ok(!names.includes(gone), `${gone} should no longer be registered`);
         }
         const tool = mock.registeredTools.find((t) => t.name === "send_message");
+        assert.ok(tool, "expected send_message to be registered");
         assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["message", "to"]);
         assert.match(tool.description, /spawned you/i);
       } finally {
@@ -1236,6 +1237,7 @@ describe("subagent-done.ts", () => {
       const { mock, restore } = setupSubagentExtension(sessionFile);
       try {
         const tool = mock.registeredTools.find((t) => t.name === "send_message");
+        assert.ok(tool, "expected send_message to be registered");
         let shutdownCalled = false;
         const ctx = { shutdown() { shutdownCalled = true; } } as any;
         const out = await tool.execute(
@@ -1895,7 +1897,8 @@ describe("subagent interruption", () => {
   it("refuses an explicit spawn named parent rather than silently renaming it", async () => {
     const { api, registeredTools } = createMockExtensionApi();
     (subagentsModule as any).default(api);
-    const subagentTool = registeredTools.find((tool: any) => tool.name === "subagent");
+    const subagentTool = registeredTools.find((tool) => tool.name === "subagent");
+    assert.ok(subagentTool, "expected subagent to be registered");
 
     const result = await subagentTool.execute("call-1", {
       name: "parent",
