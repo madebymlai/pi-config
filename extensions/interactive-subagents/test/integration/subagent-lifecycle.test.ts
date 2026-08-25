@@ -39,6 +39,13 @@ const backends = getAvailableBackends();
 if (backends.length === 0) {
   console.log("⚠️  tmux is not available — skipping subagent lifecycle integration tests");
   console.log("   Run inside tmux to enable these tests.");
+
+  // Register the skip explicitly. A file that defines no tests still counts as
+  // one passing test, so an unregistered suite reports as a pass and reads like
+  // it ran. This makes the runner say skipped instead.
+  describe("subagent lifecycle", () => {
+    it("needs a tmux session", { skip: "not running inside tmux (TMUX is unset)" }, () => {});
+  });
 }
 
 for (const backend of backends) {

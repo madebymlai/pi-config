@@ -40,6 +40,13 @@ const FOCUS_TEST_SHELL_READY_DELAY_MS = Number(process.env.PI_SUBAGENT_SHELL_REA
 if (backends.length === 0) {
   console.log("⚠️  tmux is not available — skipping tmux-surface integration tests");
   console.log("   Run inside tmux to enable these tests.");
+
+  // Register the skip explicitly. A file that defines no tests still counts as
+  // one passing test, so an unregistered suite reports as a pass and reads like
+  // it ran. This makes the runner say skipped instead.
+  describe("tmux-surface", () => {
+    it("needs a tmux session", { skip: "not running inside tmux (TMUX is unset)" }, () => {});
+  });
 }
 
 for (const backend of backends) {
