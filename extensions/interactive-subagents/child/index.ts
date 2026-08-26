@@ -5,7 +5,7 @@
  *   reach the orchestrator that spawned it
  *
  * Subagents do NOT self-terminate via a tool. Auto-exit agents shut down
- * automatically when their agent loop ends (see the `agent_end` handler);
+ * automatically once their run has settled (see the `agent_settled` handler);
  * interactive agents end when the human exits the pane.
  *
  * Messaging the parent keeps the session OPEN: it writes a `${sessionFile}.message`
@@ -24,7 +24,19 @@ export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
 }
 
 
-export function shouldAutoExitOnAgentEnd(
+/**
+ * Whether an auto-exit subagent should shut down, given the messages of the
+ * turn that just ended.
+ *
+ * Asked at `agent_settled`, never at `agent_end`, and that is the whole point
+ * of the name. pi decides *after* agent_end whether to auto-retry a provider
+ * error, and a retry continues this same session. Deciding at agent_end turned
+ * a dropped websocket — an error pi retries by default, and which succeeds on
+ * the next attempt because the provider falls back to SSE — into a dead
+ * subagent and a lost run. `agent_settled` fires only once no retry, no
+ * compaction and no queued continuation is coming.
+ */
+export function shouldAutoExitOnSettled(
   _userTookOver: boolean,
   messages: any[] | undefined,
 ): boolean {
@@ -32,8 +44,8 @@ export function shouldAutoExitOnAgentEnd(
   // turn completed normally, close the session. Escape/abort still leaves it
   // open for inspection or another prompt.
   //
-  // stopReason: "error" (e.g. exhausted retries on a provider overload) also
-  // returns true — we want to shut down so the parent is woken up — but we
+  // stopReason: "error" also returns true — by the time a run settles pi has
+  // spent its retry budget, so the session will not recover on its own — but we
   // pair this with findLatestAssistantError() so the parent learns it was an
   // error, not a clean completion.
   if (messages) {
@@ -199,6 +211,13 @@ export default function (pi: ExtensionAPI) {
   // lands — on `input` (covers a reply steered into the current run) and on
   // `agent_start` (covers a reply that starts a fresh turn after parking).
   let awaitingReply = false;
+  // The turn `agent_settled` is about to rule on. It decides the exit but
+  // carries no messages of its own, and pi offers extensions no way to read
+  // them back, so the last `agent_end` leaves them here — with `sawAgentEnd`
+  // recording that one was left at all, since a run that never reached a turn
+  // is not a run to shut a session down on.
+  let settledTurnMessages: any[] | undefined;
+  let sawAgentEnd = false;
 
   // Show widget + status bar on session start
   pi.on("session_start", (_event, ctx) => {
@@ -236,32 +255,48 @@ export default function (pi: ExtensionAPI) {
     // A new turn is starting — any pending message has now been replied to
     // (or superseded), so let auto-exit resume normally when this turn ends.
     awaitingReply = false;
+    // This run rules on its own turn, not the one an earlier agent_end left.
+    settledTurnMessages = undefined;
+    sawAgentEnd = false;
     recorder.agentStart();
   });
 
-  pi.on("agent_end", (event, ctx) => {
-    const messages = (event as any).messages as any[] | undefined;
+  // The turn is over; the run may not be. pi weighs an auto-retry after this
+  // event and before agent_settled, so nothing here may end the session or tell
+  // the parent how the run went — a sidecar written now is read within the
+  // second and the pane killed under a subagent that was about to retry.
+  pi.on("agent_end", (event) => {
+    settledTurnMessages = (event as any).messages as any[] | undefined;
+    sawAgentEnd = true;
+    recorder.agentEndWaiting();
+  });
+
+  // Nothing more is coming: no retry, no compaction, no queued continuation.
+  pi.on("agent_settled", (_event, ctx) => {
     // Never shut down while a message is pending the orchestrator's reply: the
     // session parks as `waiting` and resumes when the reply lands.
     const shouldExit =
+      sawAgentEnd &&
       !awaitingReply &&
       autoExit &&
-      shouldAutoExitOnAgentEnd(userTookOver, messages);
+      shouldAutoExitOnSettled(userTookOver, settledTurnMessages);
 
     if (shouldExit) {
-      // Surface stopReason: "error" turns (auto-retry exhausted, provider
+      // Surface stopReason: "error" turns (retry budget spent, provider
       // overload, etc.) to the parent via the .exit sidecar so the watcher
       // can report a clear failure with the underlying error message.
       // Without this the parent would only see exit code 0 and a stale
       // assistant message, mistaking the crash for a successful completion.
-      writeExitSidecar(process.env.PI_SUBAGENT_SESSION, findLatestAssistantError(messages));
+      writeExitSidecar(
+        process.env.PI_SUBAGENT_SESSION,
+        findLatestAssistantError(settledTurnMessages),
+      );
 
       recorder.agentEndDone();
       ctx.shutdown();
       return;
     }
 
-    recorder.agentEndWaiting();
     if (autoExit) {
       // Reset any recorded manual input marker. Auto-exit is decided by whether
       // the latest agent turn completed normally, not by who initiated it.

@@ -134,11 +134,12 @@ You are a specialized agent that does X...
 
 ### auto-exit
 
-With `auto-exit: true`, the session shuts down when the agent's turn ends — the agent just writes its final message and stops (there is no "done" tool). The last assistant message becomes the summary returned to the parent. Recommended for all autonomous agents.
+With `auto-exit: true`, the session shuts down once the agent's run settles — the agent just writes its final message and stops (there is no "done" tool). The last assistant message becomes the summary returned to the parent. Recommended for all autonomous agents.
 
 Notes:
 
 - **Manual input does not strand an auto-exit sub-agent.** If a human types into the pane, the session still closes once that turn completes normally — only an escape/abort leaves it open.
+- **A turn ending is not the run ending.** pi weighs an auto-retry after the turn ends, and a transient provider error — a websocket dropped mid-stream, an overload — is retryable by default. Exit is decided at `agent_settled`, once no retry, compaction or queued continuation is coming, so a blip pi recovers from on the next attempt no longer ends the sub-agent and reports the run as failed.
 - **Auto-exit is suppressed while work is in flight:** the session parks as `waiting` instead of exiting when a message to the parent is still unanswered, or when the agent's own child sub-agents are still running (a worker can stop after dispatching children and stays open until the last result returns).
 
 ### interactive

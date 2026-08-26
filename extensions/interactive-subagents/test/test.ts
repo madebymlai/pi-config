@@ -49,7 +49,7 @@ import { readSubagentActivityFile } from "../observe/activity-reader.ts";
 import { getSubagentActivityFile } from "../protocol/activity.ts";
 import {
   shouldMarkUserTookOver,
-  shouldAutoExitOnAgentEnd,
+  shouldAutoExitOnSettled,
   findLatestAssistantError,
   writeExitSidecar,
 } from "../child/index.ts";
@@ -932,28 +932,29 @@ describe("child/index.ts", () => {
     });
   });
 
-  describe("shouldAutoExitOnAgentEnd", () => {
+  describe("shouldAutoExitOnSettled", () => {
     it("auto-exits after normal completion when there was no takeover", () => {
       const messages = [{ role: "assistant", stopReason: "stop" }];
-      assert.equal(shouldAutoExitOnAgentEnd(false, messages), true);
+      assert.equal(shouldAutoExitOnSettled(false, messages), true);
     });
 
     it("auto-exits after normal completion even when the user sent the prompt", () => {
       const messages = [{ role: "assistant", stopReason: "stop" }];
-      assert.equal(shouldAutoExitOnAgentEnd(true, messages), true);
+      assert.equal(shouldAutoExitOnSettled(true, messages), true);
     });
 
     it("stays open after Escape aborts the run", () => {
       const messages = [{ role: "assistant", stopReason: "aborted" }];
-      assert.equal(shouldAutoExitOnAgentEnd(false, messages), false);
+      assert.equal(shouldAutoExitOnSettled(false, messages), false);
     });
 
     it("still exits when the latest turn ended with stopReason=error", () => {
-      // Auto-exit subagents must shut down on retry-exhaustion errors so the
-      // parent is woken. The error sidecar (written separately) carries the
-      // failure detail; staying open would just strand the worker.
+      // A settled run has already spent pi's retry budget, so an error here is
+      // final: shut down and wake the parent. The error sidecar (written
+      // separately) carries the failure detail; staying open would just strand
+      // the worker.
       const messages = [{ role: "assistant", stopReason: "error", errorMessage: "529 overloaded" }];
-      assert.equal(shouldAutoExitOnAgentEnd(false, messages), true);
+      assert.equal(shouldAutoExitOnSettled(false, messages), true);
     });
   });
 
@@ -1124,6 +1125,16 @@ describe("child/index.ts", () => {
       return { emit, ask, restore };
     }
 
+    /** Drive one full run: the turn ends, then the run settles. */
+    function endRun(
+      emit: (event: string, ...args: any[]) => void,
+      messages: any[],
+      onShutdown: () => void,
+    ) {
+      emit("agent_end", { messages });
+      emit("agent_settled", {}, { shutdown: onShutdown });
+    }
+
     it("exits (does not park) when the reply arrives mid-run via input", async () => {
       const dir = createTestDir();
       const { emit, ask, restore } = setupCapturingExtension(join(dir, "s.jsonl"));
@@ -1133,15 +1144,15 @@ describe("child/index.ts", () => {
         // Reply arrives MID-RUN as a steer: input fires, no new agent_start.
         emit("input");
         let shutdown = false;
-        emit("agent_end", { messages: [] }, { shutdown() { shutdown = true; } });
-        assert.equal(shutdown, true, "reply consumed mid-run → agent_end should exit, not park");
+        endRun(emit, [], () => { shutdown = true; });
+        assert.equal(shutdown, true, "reply consumed mid-run → a settled run should exit, not park");
       } finally {
         restore();
         rmSync(dir, { recursive: true, force: true });
       }
     });
 
-    it("parks as waiting at agent_end while the reply is still pending (no input yet)", async () => {
+    it("parks as waiting while the reply is still pending (no input yet)", async () => {
       const dir = createTestDir();
       const { emit, ask, restore } = setupCapturingExtension(join(dir, "s.jsonl"));
       try {
@@ -1149,7 +1160,7 @@ describe("child/index.ts", () => {
         await ask();
         // No input yet — the orchestrator has not replied.
         let shutdown = false;
-        emit("agent_end", { messages: [] }, { shutdown() { shutdown = true; } });
+        endRun(emit, [], () => { shutdown = true; });
         assert.equal(shutdown, false, "pending question with no reply must park, not exit");
       } finally {
         restore();
@@ -1164,14 +1175,122 @@ describe("child/index.ts", () => {
         emit("agent_start");
         await ask();
         let shutdown1 = false;
-        emit("agent_end", { messages: [] }, { shutdown() { shutdown1 = true; } });
+        endRun(emit, [], () => { shutdown1 = true; });
         assert.equal(shutdown1, false, "parks while waiting");
         // Reply arrives as a fresh turn after the subagent had parked.
         emit("input");
         emit("agent_start");
         let shutdown2 = false;
-        emit("agent_end", { messages: [] }, { shutdown() { shutdown2 = true; } });
-        assert.equal(shutdown2, true, "after the reply turn, agent_end should exit");
+        endRun(emit, [], () => { shutdown2 = true; });
+        assert.equal(shutdown2, true, "after the reply turn, the settled run should exit");
+      } finally {
+        restore();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    /**
+     * The retry window. pi weighs an auto-retry between `agent_end` and
+     * `agent_settled`, and a transient provider error — a dropped websocket
+     * mid-stream is the one that keeps happening — is retryable by default and
+     * usually succeeds on the next attempt.
+     *
+     * Ending the session at `agent_end` did two irreversible things inside that
+     * window: it wrote the `.exit` sidecar, which the parent reads within the
+     * second and answers by killing the pane, and it asked pi to shut down. The
+     * subagent died in its own backoff and a 13-minute run was reported as a
+     * provider failure it had already recovered from.
+     */
+    it("leaves a provider error alone at agent_end, so pi's auto-retry can run", () => {
+      const dir = createTestDir();
+      const sessionFile = join(dir, "s.jsonl");
+      const { emit, restore } = setupCapturingExtension(sessionFile);
+      try {
+        emit("agent_start");
+        let shutdown = false;
+        emit("agent_end", {
+          messages: [{ role: "assistant", stopReason: "error", errorMessage: "WebSocket error" }],
+        }, { shutdown() { shutdown = true; } });
+
+        assert.equal(shutdown, false, "a retry may still be coming — do not end the session");
+        assert.ok(
+          !existsSync(`${sessionFile}.exit`),
+          "no sidecar in the retry window: the parent kills the pane on one",
+        );
+      } finally {
+        restore();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("reports the error once the run settles on it", () => {
+      const dir = createTestDir();
+      const sessionFile = join(dir, "s.jsonl");
+      const { emit, restore } = setupCapturingExtension(sessionFile);
+      try {
+        emit("agent_start");
+        let shutdown = false;
+        endRun(
+          emit,
+          [{ role: "assistant", stopReason: "error", errorMessage: "WebSocket error" }],
+          () => { shutdown = true; },
+        );
+
+        assert.equal(shutdown, true, "retries are spent by the time a run settles");
+        const payload = JSON.parse(readFileSync(`${sessionFile}.exit`, "utf8"));
+        assert.equal(payload.type, "error");
+        assert.equal(payload.errorMessage, "WebSocket error");
+      } finally {
+        restore();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    /**
+     * A retry that succeeds settles on the retried turn, not the failed one:
+     * pi drops the error message from agent state before continuing, so the
+     * final `agent_end` carries the completion. The parent must be told the run
+     * completed, with no error sidecar to contradict it.
+     */
+    it("reports a completion when the retry succeeds", () => {
+      const dir = createTestDir();
+      const sessionFile = join(dir, "s.jsonl");
+      const { emit, restore } = setupCapturingExtension(sessionFile);
+      try {
+        emit("agent_start");
+        emit("agent_end", {
+          messages: [{ role: "assistant", stopReason: "error", errorMessage: "WebSocket error" }],
+        });
+        // pi retries; the continuation ends the turn again, this time cleanly.
+        let shutdown = false;
+        endRun(
+          emit,
+          [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] }],
+          () => { shutdown = true; },
+        );
+
+        assert.equal(shutdown, true);
+        assert.deepEqual(JSON.parse(readFileSync(`${sessionFile}.exit`, "utf8")), { type: "done" });
+      } finally {
+        restore();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    /**
+     * A run that never reached a turn has nothing to rule on. Exiting here
+     * would end a session on a settle the extension never saw the run behind —
+     * a startup failure, or a prompt rejected before the agent loop began.
+     */
+    it("does not exit on a settle it saw no turn for", () => {
+      const dir = createTestDir();
+      const sessionFile = join(dir, "s.jsonl");
+      const { emit, restore } = setupCapturingExtension(sessionFile);
+      try {
+        let shutdown = false;
+        emit("agent_settled", {}, { shutdown() { shutdown = true; } });
+        assert.equal(shutdown, false, "no agent_end was seen, so there is no run to end");
+        assert.ok(!existsSync(`${sessionFile}.exit`));
       } finally {
         restore();
         rmSync(dir, { recursive: true, force: true });
