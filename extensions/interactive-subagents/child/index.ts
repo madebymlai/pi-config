@@ -15,7 +15,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { writeFileSync } from "node:fs";
+import { renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createSubagentActivityRecorder } from "./activity-recorder.ts";
 import { PARENT, registerSendMessage } from "../protocol/messaging.ts";
 
@@ -104,10 +104,23 @@ export function writeExitSidecar(
         stopReason: errorInfo.stopReason,
       }
     : { type: "done" };
+  // Written through a temp file and renamed, like the activity file and the
+  // name registry: the parent polls this path every second and parses whatever
+  // it finds, and rename is the only way it sees the whole file or none of it.
+  // The error payload carries a message of unbounded length, which is where a
+  // torn read stops being hypothetical.
+  const target = `${sessionFile}.exit`;
+  const tempFile = `${target}.${process.pid}.tmp`;
   try {
-    writeFileSync(`${sessionFile}.exit`, JSON.stringify(payload));
+    writeFileSync(tempFile, JSON.stringify(payload));
+    renameSync(tempFile, target);
     return true;
   } catch {
+    try {
+      unlinkSync(tempFile);
+    } catch {
+      // Cleanup is best effort; the write already failed.
+    }
     // Best effort — the watcher's session-file fallback can still recover.
     return false;
   }
