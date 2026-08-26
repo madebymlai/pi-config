@@ -382,3 +382,24 @@ describe("children", () => {
     });
   });
 });
+
+describe("multiple sessions in one process", () => {
+  it("keeps accepting launches after a session ends", async () => {
+    // pi runs several sessions against one module load, and each one's
+    // session_shutdown calls shutdown(). A shutdown that disabled the instance
+    // for good would silently drop every spawn of every later session.
+    const children = createChildren();
+    await children.launch({ base: "a", ...pending("a1") });
+    children.shutdown();
+
+    const next = await children.launch({ base: "b", ...pending("a2") });
+
+    assert.equal(next.name, "b");
+    assert.deepEqual(
+      children.live().map((r) => r.id),
+      ["a2"],
+      "a later session's subagent must be tracked, not dropped",
+    );
+    children.shutdown();
+  });
+});

@@ -124,7 +124,11 @@ export function createChildren(): Children {
   const claims = new Set<string>();
   let observer: ((live: readonly RunningSubagent[], now: number) => void) | null = null;
   let timer: Timer | null = null;
-  let closed = false;
+  // Bumped by every shutdown. A launch remembers the generation it was born in,
+  // so a shutdown can disown the launches it interrupted without disabling the
+  // instance: pi runs several sessions against one module load, and each one's
+  // session_shutdown lands here.
+  let generation = 0;
 
   function snapshot() {
     return Array.from(entries.values());
@@ -166,6 +170,7 @@ export function createChildren(): Children {
 
   return {
     async launch<T>(request: LaunchRequest<T>) {
+      const born = generation;
       const preferred = request.preferred?.trim() ? request.preferred : undefined;
       const name = preferred ?? derive(request.base, request.alsoTaken);
       // Only a derived name needs a claim: a supplied one was never ours to hand out.
@@ -179,9 +184,10 @@ export function createChildren(): Children {
         if (claimed) claims.delete(name);
       }
 
-      // Shut down mid-launch: register nothing and stay silent, but still watch.
+      // A shutdown landed while this was starting, so it belongs to a generation
+      // that is already gone: register nothing and stay silent, but still watch.
       // The watcher is what closes the pane this launch just opened.
-      if (closed) {
+      if (born !== generation) {
         void request.watch(running).catch(() => {});
         return running;
       }
@@ -221,7 +227,7 @@ export function createChildren(): Children {
     },
 
     shutdown() {
-      closed = true;
+      generation += 1;
       stopTicking();
       observer = null;
       for (const running of entries.values()) running.abortController.abort();
