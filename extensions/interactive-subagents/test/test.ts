@@ -51,6 +51,7 @@ import {
   shouldMarkUserTookOver,
   shouldAutoExitOnAgentEnd,
   findLatestAssistantError,
+  writeExitSidecar,
 } from "../child/index.ts";
 import subagentDoneExtension from "../child/index.ts";
 import { registerSendMessage, __test__ as messagingTestApi } from "../protocol/messaging.ts";
@@ -888,6 +889,46 @@ describe("child/index.ts", () => {
 
     it("treats later input as manual takeover", () => {
       assert.equal(shouldMarkUserTookOver(true), true);
+    });
+  });
+
+  describe("writeExitSidecar", () => {
+    function withSession<T>(fn: (sessionFile: string) => T): T {
+      const dir = mkdtempSync(join(tmpdir(), "exit-sidecar-"));
+      try {
+        return fn(join(dir, "child.jsonl"));
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    /**
+     * The parent learns a run finished by reading a sentinel off the child's
+     * tmux pane. A pane lives only as long as something holds it open, so that
+     * evidence can be gone before the next poll. The sidecar is the account
+     * that outlives the pane, and a clean finish needs one exactly as much as a
+     * crash does: without it, pollForExit has nothing left to observe and waits
+     * on a child that exited minutes ago.
+     */
+    it("records a clean exit, so a vanished pane is not the only evidence", () => {
+      withSession((sessionFile) => {
+        writeExitSidecar(sessionFile, null);
+        assert.ok(existsSync(`${sessionFile}.exit`), "a clean exit must leave a record too");
+        assert.deepEqual(JSON.parse(readFileSync(`${sessionFile}.exit`, "utf8")), { type: "done" });
+      });
+    });
+
+    it("records an error exit with the message the parent should report", () => {
+      withSession((sessionFile) => {
+        writeExitSidecar(sessionFile, { errorMessage: "overloaded", stopReason: "error" } as any);
+        const payload = JSON.parse(readFileSync(`${sessionFile}.exit`, "utf8"));
+        assert.equal(payload.type, "error");
+        assert.equal(payload.errorMessage, "overloaded");
+      });
+    });
+
+    it("writes nothing when there is no session file to write beside", () => {
+      assert.equal(writeExitSidecar(undefined, null), false);
     });
   });
 

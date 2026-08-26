@@ -208,6 +208,16 @@ for (const backend of backends) {
           `so the session would wait on it forever.`,
       );
       assert.equal(entry.details?.name, `Deliver-${id}`, "result should name the subagent it came from");
+
+      // The result is harvested from the child's last assistant message, and
+      // the parent may settle the moment the child records how it ended rather
+      // than when its process is fully gone. Assert the summary survived that:
+      // a header with nothing under it means we steered back an empty result.
+      const body = String(entry.content ?? "").split("\n").slice(1).join("\n").trim();
+      assert.ok(
+        body.length > 0,
+        `The result carried no summary, only a header: ${JSON.stringify(entry.content)}`,
+      );
     });
 
     /**

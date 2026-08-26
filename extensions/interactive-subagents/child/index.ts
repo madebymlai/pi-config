@@ -86,6 +86,33 @@ export function parseDeniedTools(rawValue: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Record how this run ended, beside its session file.
+ *
+ * The parent watches a tmux pane, and a pane is gone the moment nothing holds
+ * it open. This file is the only account of the run that outlives the pane.
+ */
+export function writeExitSidecar(
+  sessionFile: string | undefined,
+  errorInfo: SubagentErrorInfo | null,
+) {
+  if (!sessionFile) return false;
+  const payload = errorInfo
+    ? {
+        type: "error",
+        errorMessage: errorInfo.errorMessage,
+        stopReason: errorInfo.stopReason,
+      }
+    : { type: "done" };
+  try {
+    writeFileSync(`${sessionFile}.exit`, JSON.stringify(payload));
+    return true;
+  } catch {
+    // Best effort — the watcher's session-file fallback can still recover.
+    return false;
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   let toolNames: string[] = [];
   let denied: string[] = [];
@@ -214,23 +241,7 @@ export default function (pi: ExtensionAPI) {
       // can report a clear failure with the underlying error message.
       // Without this the parent would only see exit code 0 and a stale
       // assistant message, mistaking the crash for a successful completion.
-      const errorInfo = findLatestAssistantError(messages);
-      const sessionFile = process.env.PI_SUBAGENT_SESSION;
-      if (errorInfo && sessionFile) {
-        try {
-          writeFileSync(
-            `${sessionFile}.exit`,
-            JSON.stringify({
-              type: "error",
-              errorMessage: errorInfo.errorMessage,
-              stopReason: errorInfo.stopReason,
-            }),
-          );
-        } catch {
-          // Best effort — even without the sidecar, watcher's session-file
-          // fallback can still recover the errorMessage.
-        }
-      }
+      writeExitSidecar(process.env.PI_SUBAGENT_SESSION, findLatestAssistantError(messages));
 
       recorder.agentEndDone();
       ctx.shutdown();
