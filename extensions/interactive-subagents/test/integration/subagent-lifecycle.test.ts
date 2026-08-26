@@ -18,7 +18,9 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import {
   getAvailableBackends,
   createTestEnv,
@@ -34,6 +36,56 @@ import {
   PI_TIMEOUT,
   type TestEnv,
 } from "./harness.ts";
+
+/**
+ * Find the parent session's transcript and wait for it to record a
+ * subagent_result. `startPi` lets pi choose its own session file, so the
+ * parent is identified by content: it is the only transcript written during
+ * this test that carries the test's unique id.
+ */
+async function waitForParentResult(
+  id: string,
+  startedAt: number,
+  timeoutMs: number,
+): Promise<any | null> {
+  const root = join(homedir(), ".pi", "agent", "sessions");
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    for (const dir of existsSync(root) ? readdirSync(root) : []) {
+      const sessionDir = join(root, dir);
+      let files: string[] = [];
+      try {
+        files = readdirSync(sessionDir).filter((f) => f.endsWith(".jsonl"));
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        const full = join(sessionDir, file);
+        let raw = "";
+        try {
+          if (statSync(full).mtimeMs < startedAt) continue;
+          raw = readFileSync(full, "utf8");
+        } catch {
+          continue;
+        }
+        // The parent is the transcript holding this test's task text.
+        if (!raw.includes(id)) continue;
+        for (const line of raw.trim().split("\n")) {
+          let entry: any;
+          try {
+            entry = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (entry?.customType === "subagent_result") return entry;
+        }
+      }
+    }
+    await sleep(1000);
+  }
+  return null;
+}
 
 const backends = getAvailableBackends();
 
@@ -109,6 +161,90 @@ for (const backend of backends) {
         assert.equal(header.type, "session", "First entry should be session header");
         assert.ok(header.id, "Session header should have an id");
       }
+    });
+
+    /**
+     * The delivery half of a spawn, which nothing else covers.
+     *
+     * Every other test here proves the CHILD ran: it checks a marker file, or
+     * the child's own session. None of them prove the PARENT was ever told.
+     * Those are separate mechanisms — the child writes its transcript and
+     * exits, then the parent's watcher has to notice and steer the result in —
+     * and the second one can fail on its own, leaving a session that waits
+     * forever on a subagent that finished minutes ago.
+     *
+     * The assertion is deliberately on the parent's transcript rather than its
+     * screen. A screen regex matches whatever the widget or status line happens
+     * to be painting, so it can go green while nothing was delivered; the
+     * subagent_result entry exists only if reportResult actually ran.
+     */
+    it("delivers the result into the parent's own transcript, not just the screen", async () => {
+      const id = uniqueId();
+      const markerFile = `/tmp/pi-integ-deliver-${id}.txt`;
+      trackTempFile(env, markerFile);
+
+      const surface = createTrackedSurface(env, `deliver-${id}`);
+      await sleep(1000);
+
+      const task = [
+        `Call the subagent tool with these EXACT parameters:`,
+        `  name: "Deliver-${id}"`,
+        `  agent: "test-echo"`,
+        `  task: "Run this bash command: echo 'PASS_${id}' > '${markerFile}'"`,
+        `Do not do anything else. Just call the subagent tool once.`,
+      ].join("\n");
+
+      const startedAt = Date.now();
+      startPi(surface, env.dir, task);
+
+      // The child finished. Whether the parent hears about it is the question.
+      await waitForFile(markerFile, PI_TIMEOUT, /PASS/);
+
+      const entry = await waitForParentResult(id, startedAt, PI_TIMEOUT);
+      assert.ok(
+        entry,
+        `The parent never recorded a subagent_result for Deliver-${id}. The child ` +
+          `finished (marker file written) but the result was never steered back, ` +
+          `so the session would wait on it forever.`,
+      );
+      assert.equal(entry.details?.name, `Deliver-${id}`, "result should name the subagent it came from");
+    });
+
+    /**
+     * The same delivery, but with the parent guaranteed idle when the result
+     * lands. The test above lets the child finish in seconds, while the parent
+     * is often still mid-turn, so a steer has a live turn to land in. Here the
+     * child sleeps well past the parent's last word, which is the ordinary case
+     * for any real research or implementation task.
+     */
+    it("delivers the result when the parent has gone idle waiting", async () => {
+      const id = uniqueId();
+      const markerFile = `/tmp/pi-integ-idle-${id}.txt`;
+      trackTempFile(env, markerFile);
+
+      const surface = createTrackedSurface(env, `idle-${id}`);
+      await sleep(1000);
+
+      const task = [
+        `Call the subagent tool with these EXACT parameters:`,
+        `  name: "Idle-${id}"`,
+        `  agent: "test-echo"`,
+        `  task: "Run this bash command and wait for it: sleep 45 && echo 'PASS_${id}' > '${markerFile}'"`,
+        `Do not do anything else. Just call the subagent tool once, then stop and say SPAWNED.`,
+      ].join("\n");
+
+      const startedAt = Date.now();
+      startPi(surface, env.dir, task);
+
+      await waitForFile(markerFile, PI_TIMEOUT, /PASS/);
+
+      const entry = await waitForParentResult(id, startedAt, PI_TIMEOUT);
+      assert.ok(
+        entry,
+        `The parent never recorded a subagent_result for Idle-${id}. The child ` +
+          `finished long after the parent's turn ended, which is when a steer has ` +
+          `no live turn to land in.`,
+      );
     });
 
     // ── In-progress activity snapshots ──
