@@ -18,7 +18,9 @@ Show this to the user, then immediately proceed to Step 2. The user reads and th
 
 ### 2. Spawn designers
 
-Spawn 3+ `designer` sub-agents in parallel. Each must produce a **radically different** interface for the deepened module.
+Spawn 3+ sub-agents in parallel with `subagent({ agent: "designer", task: … })`. The `designer` agent is the one to use: it has no write tool, so it cannot drift from proposing into building. Pass a `name` too, one that says which constraint the agent is carrying, so the panes and the returning results stay tellable apart.
+
+Each must produce a **radically different** interface for the deepened module.
 
 Prompt each designer with a separate technical brief (file paths, coupling details, dependency category from [DEEPENING.md](DEEPENING.md), what sits behind the seam). The brief is independent of the user-facing problem-space explanation in Step 1. Give each agent a different design constraint:
 
