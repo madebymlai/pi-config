@@ -10,7 +10,6 @@
 
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { VERSION, keyHint, rawKeyHint } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
 
 /**
  * Build the header text. This is what you customize.
@@ -19,7 +18,7 @@ import { Text } from "@earendil-works/pi-tui";
  *   - App name + version
  *   - Keybinding hints
  *
- * To customize, just edit the `logo` or `hints` array below.
+ * To customize, edit the `logo` or `_hints` array below.
  */
 function buildHeader(theme: Theme): string {
 	// ── Logo ──────────────────────────────────────────────
@@ -47,7 +46,7 @@ function buildHeader(theme: Theme): string {
 	// Each entry is one line. Remove, reorder, or add your own.
 	// Use rawKeyHint("key", "description") for app-level shortcuts.
 	// Use keyHint("editorAction", "description") for editor shortcuts.
-	const hints = [
+	const _hints = [
 		rawKeyHint("escape", "to interrupt"),
 		rawKeyHint("ctrl+c", "to clear"),
 		rawKeyHint("ctrl+c twice", "to exit"),
@@ -69,7 +68,7 @@ function buildHeader(theme: Theme): string {
 		rawKeyHint("drop files", "to attach"),
 	];
 
-	//return `${logo}\n${hints.join("\n")}`;
+	//return `${logo}\n${_hints.join("\n")}`;
 	return logo
 }
 
