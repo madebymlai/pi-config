@@ -301,7 +301,8 @@ export async function pollForExit(
       throw new Error("Aborted while waiting for subagent to finish");
     }
 
-    // Fast path: check for .exit sidecar file (written by the error path)
+    // Fast path: the child's own account of how it ended, written on every
+    // exit it is alive to report. Durable, so it survives the pane.
     if (options.sessionFile) {
       try {
         const exitFile = `${options.sessionFile}.exit`;
@@ -313,7 +314,10 @@ export async function pollForExit(
       } catch {}
     }
 
-    // Slow path: read terminal screen for sentinel (crash detection)
+    // Slow path: crash detection only. The echo lives in the launch script
+    // rather than in the child, so it still fires when the child never reached
+    // agent_end at all: a bad model, a missing key, an extension that failed to
+    // load. Nothing else can see those, which is why it stays.
     try {
       const screen = await readScreenAsync(surface, 5);
       const match = screen.match(/__SUBAGENT_DONE_(\d+)__/);
