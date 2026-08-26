@@ -11,15 +11,19 @@ Work the tree in **rounds**. The **frontier** is every decision whose prerequisi
 Format a round like so:
 
 ```
-❓ **Q1** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
+### `Q1` <question title>
 
-➡️ <your recommended answer>
+<question body, which may run to several paragraphs, and the named alternatives where the choice is between them>
 
----
+➡️ <your recommended answer, and the reason it wins>
 
-❓ **Q2** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
+──────────
 
-➡️ <your recommended answer>
+### `Q2` <question title>
+
+<question body>
+
+➡️ <your recommended answer, and the reason it wins>
 ```
 
 Each round the user answers reshapes the tree: settled decisions push the frontier outward and unblock questions that depended on them. Recompute the frontier and ask the next round. A question whose answer depends on another question still open in this round belongs to a _later_ round, not this one.
