@@ -16,20 +16,20 @@ Before spawning sub-agents, write a user-facing explanation of the problem space
 
 Show this to the user, then immediately proceed to Step 2. The user reads and thinks while the sub-agents work in parallel.
 
-### 2. Spawn sub-agents
+### 2. Spawn designers
 
-Spawn 3+ sub-agents in parallel. Each must produce a **radically different** interface for the deepened module.
+Spawn 3+ `designer` sub-agents in parallel. Each must produce a **radically different** interface for the deepened module.
 
-Prompt each sub-agent with a separate technical brief (file paths, coupling details, dependency category from [DEEPENING.md](DEEPENING.md), what sits behind the seam). The brief is independent of the user-facing problem-space explanation in Step 1. Give each agent a different design constraint:
+Prompt each designer with a separate technical brief (file paths, coupling details, dependency category from [DEEPENING.md](DEEPENING.md), what sits behind the seam). The brief is independent of the user-facing problem-space explanation in Step 1. Give each agent a different design constraint:
 
 - Agent 1: "Minimize the interface: aim for 1–3 entry points max. Maximise leverage per entry point."
 - Agent 2: "Maximise flexibility: support many use cases and extension."
 - Agent 3: "Optimise for the most common caller: make the default case trivial."
 - Agent 4 (if applicable): "Design around ports & adapters for cross-seam dependencies."
 
-Include [SKILL.md](SKILL.md) vocabulary in the brief so each sub-agent names things consistently with the architecture language.
+Include [SKILL.md](SKILL.md) vocabulary in the brief so each designer names things consistently with the architecture language.
 
-Each sub-agent outputs:
+Each designer outputs:
 
 1. Interface (types, methods, params, plus invariants, ordering, error modes)
 2. Usage example showing how callers use it
