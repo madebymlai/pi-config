@@ -83,11 +83,12 @@ If the reply arrives while the sub-agent is still mid-turn, it is absorbed into 
 
 | Agent | Model | Tools | Role |
 | ----- | ----- | ----- | ---- |
-| **scout** | `openrouter/z-ai/glm-5.3` | `read`, `grep`, `find`, `ls` | Fast read-only codebase recon |
-| **researcher** | `openrouter/z-ai/glm-5.3` | `web_search`, `web_fetch`, `safe_bash` | Web research, synthesized into a sourced brief |
-| **worker** | `openrouter/z-ai/glm-5.3` | `read`, `write`, `edit`, `bash`, `web_search`, `web_fetch` | General implementer |
+| **scout** | `deepseek/deepseek-v4-flash` | `read`, `grep`, `find`, `ls`, graph tools | Fast read-only codebase recon |
+| **researcher** | `deepseek/deepseek-v4-flash` | `web_search`, `web_fetch`, `safe_bash` | Web research, synthesized into a sourced brief |
+| **worker** | `deepseek/deepseek-v4-pro` | `read`, `write`, `edit`, `bash`, `web_search`, `web_fetch`, graph tools | General implementer |
+| **reviewer** | `openai-codex/gpt-5.5` | `read`, `grep`, `find`, `ls`, `safe_bash`, graph tools | Reviews a diff it did not write |
 
-All three are autonomous (`auto-exit: true`) and carry their identity in the system prompt (`system-prompt: append`).
+All four are autonomous (`auto-exit: true`) and carry their identity in the system prompt (`system-prompt: append`, except researcher which uses `replace`). The reviewer runs on a different provider from the worker on purpose: a verifier sharing the author's model family tends to confirm its own errors. Each is also told, in that prompt, to `send_message` the orchestrator rather than guess when the task is ambiguous — `send_message` is granted to every sub-agent regardless of its `tools:` line.
 
 ## Custom agents
 
