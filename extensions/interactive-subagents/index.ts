@@ -20,7 +20,7 @@ import {
   readSubagentMessageDetails,
   renderSubagentMessage,
 } from "./render/subagent-message.ts";
-import { createChildren, type RunningSubagent } from "./spawn/children.ts";
+import { createChildren, type Children, type RunningSubagent } from "./spawn/children.ts";
 import { dirname, join, resolve } from "node:path";
 import {
   readFileSync,
@@ -224,8 +224,14 @@ interface SubagentResult {
   stats?: SessionStats;
 }
 
-/** Who is live, what they are called, and who is watching them. */
-const children = createChildren();
+/**
+ * Who is live, what they are called, and who is watching them.
+ *
+ * A `let` so a test can supply its own: driving the session lifecycle against
+ * an instance the test also holds is the only way to observe that the wiring
+ * below actually happened. Production never passes one.
+ */
+let children = createChildren();
 
 // ── Widget management ──
 
@@ -999,7 +1005,11 @@ function createChildTransports(
  */
 const expandHintThunk = () => keyHint("app.tools.expand", "to expand");
 
-export default function subagentsExtension(pi: ExtensionAPI) {
+export default function subagentsExtension(
+  pi: ExtensionAPI,
+  deps: { children?: Children } = {},
+) {
+  if (deps.children) children = deps.children;
   latestPi = pi;
 
   // One tick drives both the widget and the status machine, and it runs only

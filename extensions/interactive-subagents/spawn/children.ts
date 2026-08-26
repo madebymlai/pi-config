@@ -261,7 +261,9 @@ export function createChildren(): Children {
     shutdown() {
       generation += 1;
       stopTicking();
-      observer = null;
+      // The observer belongs to the module load, not to the generation being
+      // ended: pi runs several sessions against one load, and forgetting it here
+      // left every session after the first tracking subagents it never painted.
       for (const cancel of cancels.values()) cancel.abort();
       cancels.clear();
       entries.clear();
