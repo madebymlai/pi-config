@@ -1543,7 +1543,6 @@ describe("subagent interruption", () => {
       startTime: 0,
       sessionFile: "worker.jsonl",
       launchScriptFile: "",
-      abortController: new AbortController(),
       liveness,
       ...overrides,
     };

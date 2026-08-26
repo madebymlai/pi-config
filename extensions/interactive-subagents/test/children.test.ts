@@ -18,7 +18,6 @@ function entry(id: string, name = id): RunningSubagent {
     startTime: 0,
     sessionFile: `${id}.jsonl`,
     launchScriptFile: `${id}.sh`,
-    abortController: new AbortController(),
     liveness: STUB_LIVENESS,
   };
 }
@@ -224,17 +223,73 @@ describe("children", () => {
     });
   });
 
+  describe("cancellation", () => {
+    it("hands watch a signal that is live while the child is", async () => {
+      const children = createChildren();
+      let received: AbortSignal | undefined;
+      await children.launch({
+        base: "a",
+        start: async (name) => entry("a1", name),
+        watch: (_running, signal) => {
+          received = signal;
+          return new Promise<void>(() => {});
+        },
+      });
+
+      assert.ok(received, "watch must be given a signal");
+      assert.equal(received.aborted, false, "a live child's watcher starts unaborted");
+      children.shutdown();
+      assert.equal(received.aborted, true, "shutdown cancels the watcher it tears down");
+    });
+  });
+
   describe("shutdown", () => {
+    it("cancels the watcher of a launch it interrupted", async () => {
+      const children = createChildren();
+      let release: (() => void) | null = null;
+      let received: AbortSignal | undefined;
+      const inFlight = children.launch({
+        base: "a",
+        start: async (name) => {
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          return entry("a1", name);
+        },
+        watch: (_running, signal) => {
+          received = signal;
+          return new Promise<void>(() => {});
+        },
+      });
+
+      children.shutdown();
+      release!();
+      await inFlight;
+
+      assert.ok(received, "the pane it opened still needs a watcher to close it");
+      assert.equal(received.aborted, true, "but that watcher must not poll on past the shutdown");
+    });
+
     it("aborts every watcher and empties the set", async () => {
       const children = createChildren();
-      const a = await children.launch({ base: "a", ...pending("a1") });
-      const b = await children.launch({ base: "b", ...pending("a2") });
+      const signals: AbortSignal[] = [];
+      const track = (id: string) => ({
+        start: async (name: string) => entry(id, name),
+        watch: (_running: RunningSubagent, signal: AbortSignal) => {
+          signals.push(signal);
+          return new Promise<void>(() => {});
+        },
+      });
+      await children.launch({ base: "a", ...track("a1") });
+      await children.launch({ base: "b", ...track("a2") });
 
       children.shutdown();
 
       assert.deepEqual(children.live(), []);
-      assert.equal(a.abortController.signal.aborted, true);
-      assert.equal(b.abortController.signal.aborted, true);
+      assert.deepEqual(
+        signals.map((signal) => signal.aborted),
+        [true, true],
+      );
     });
 
     it("ignores a watch that settles after shutdown", async () => {

@@ -32,8 +32,6 @@ export interface RunningSubagent {
   sessionFile: string;
   /** The generated shell script, kept so a launch can be inspected after the fact. */
   launchScriptFile: string;
-  /** Aborts the watcher; the tool call's own signal is long gone by then. */
-  abortController: AbortController;
   /** How it is doing. The activity file and the status state live behind this. */
   liveness: SubagentLiveness;
 }
@@ -55,8 +53,11 @@ export interface LaunchRequest<T> {
    * Observes the entry to completion. The entry's lifetime is exactly this
    * promise's pending window, so one that never settles leaves an entry only
    * `shutdown` can remove.
+   *
+   * `signal` aborts when this child is no longer wanted. Watching it is what
+   * lets `shutdown` reach a watcher that would otherwise poll on forever.
    */
-  watch: (running: RunningSubagent) => Promise<T>;
+  watch: (running: RunningSubagent, signal: AbortSignal) => Promise<T>;
   /** Called after the entry is removed, so it never sees its own child live. */
   settled?: (running: RunningSubagent, value: T | undefined, error: unknown) => void;
 }
@@ -104,24 +105,47 @@ const TICK_MS = 1000;
  */
 const TIMER_KEY = Symbol.for("pi-subagents/children-interval");
 
+/**
+ * The watchers belonging to this module load. Every signal handed to `watch`
+ * composes with this one, so replacing the load cancels them all — including
+ * entries held by a `Children` the new load cannot see, since its set is built
+ * fresh. Per-instance state cannot do this; only a global crosses the boundary.
+ */
+const GENERATION_KEY = Symbol.for("pi-subagents/children-generation");
+
 type Timer = ReturnType<typeof setInterval>;
 
-function globals() {
+function timers() {
   return globalThis as Record<symbol, Timer | null | undefined>;
 }
 
+function generations() {
+  return globalThis as Record<symbol, AbortController | undefined>;
+}
+
+// Runs once per module load, which is the event it exists for, so there is no
+// seam to test it through — the same is true of the timer handle beside it.
 {
-  const previous = globals()[TIMER_KEY];
-  if (previous) {
-    clearInterval(previous);
-    globals()[TIMER_KEY] = null;
+  const previousTimer = timers()[TIMER_KEY];
+  if (previousTimer) {
+    clearInterval(previousTimer);
+    timers()[TIMER_KEY] = null;
   }
+  generations()[GENERATION_KEY]?.abort();
+  generations()[GENERATION_KEY] = new AbortController();
+}
+
+/** Cancelled when this module load is replaced. */
+function generationSignal() {
+  return generations()[GENERATION_KEY]!.signal;
 }
 
 export function createChildren(): Children {
   const entries = new Map<string, RunningSubagent>();
   /** Names claimed by launches that are mid-start and not yet registered. */
   const claims = new Set<string>();
+  /** One per live watcher, so shutdown can cancel what it is tearing down. */
+  const cancels = new Map<string, AbortController>();
   let observer: ((live: readonly RunningSubagent[], now: number) => void) | null = null;
   let timer: Timer | null = null;
   // Bumped by every shutdown. A launch remembers the generation it was born in,
@@ -139,13 +163,13 @@ export function createChildren(): Children {
     timer = setInterval(() => observer?.(snapshot(), Date.now()), TICK_MS);
     // Nothing should hold the process open just to watch an empty pane.
     timer.unref?.();
-    globals()[TIMER_KEY] = timer;
+    timers()[TIMER_KEY] = timer;
   }
 
   function stopTicking() {
     if (!timer) return;
     clearInterval(timer);
-    if (globals()[TIMER_KEY] === timer) globals()[TIMER_KEY] = null;
+    if (timers()[TIMER_KEY] === timer) timers()[TIMER_KEY] = null;
     timer = null;
   }
 
@@ -184,15 +208,22 @@ export function createChildren(): Children {
         if (claimed) claims.delete(name);
       }
 
+      const cancel = new AbortController();
+
       // A shutdown landed while this was starting, so it belongs to a generation
-      // that is already gone: register nothing and stay silent, but still watch.
-      // The watcher is what closes the pane this launch just opened.
+      // that is already gone: register nothing and stay silent. It is still
+      // watched, because the watcher is what closes the pane this launch just
+      // opened — but on a cancelled signal, so it closes and stops rather than
+      // polling on into a session that is over.
       if (born !== generation) {
-        void request.watch(running).catch(() => {});
+        cancel.abort();
+        void request.watch(running, cancel.signal).catch(() => {});
+        // Already cancelled, so composing with the generation would add nothing.
         return running;
       }
 
       entries.set(running.id, running);
+      cancels.set(running.id, cancel);
       changed();
 
       let removed = false;
@@ -201,10 +232,11 @@ export function createChildren(): Children {
         removed = true;
         // Absent when shutdown got there first — then there is nothing to
         // announce, and nothing that should re-arm the interval.
+        cancels.delete(running.id);
         return entries.delete(running.id) ? (changed(), true) : false;
       };
 
-      request.watch(running).then(
+      request.watch(running, AbortSignal.any([cancel.signal, generationSignal()])).then(
         (value) => {
           remove();
           request.settled?.(running, value, null);
@@ -230,7 +262,8 @@ export function createChildren(): Children {
       generation += 1;
       stopTicking();
       observer = null;
-      for (const running of entries.values()) running.abortController.abort();
+      for (const cancel of cancels.values()) cancel.abort();
+      cancels.clear();
       entries.clear();
     },
   };

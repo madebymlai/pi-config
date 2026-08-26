@@ -98,27 +98,6 @@ const SPAWN_GUIDANCE =
   "After spawning, end your turn or start other independent work, including further sub-agents " +
   "in parallel.";
 
-// Survive /reload: abort poll loops from the previous module load. /reload
-// re-imports this file, giving fresh module-level state, but closures from the old
-// module keep running. The interval handle is carried across the same boundary by
-// spawn/children.ts, which owns it.
-// See https://github.com/HazAT/pi-interactive-subagents/issues/5
-const POLL_ABORT_KEY = Symbol.for("pi-subagents/poll-abort-controller");
-
-function pollAbort() {
-  return globalThis as Record<symbol, AbortController | undefined>;
-}
-
-{
-  const prevAbort = pollAbort()[POLL_ABORT_KEY];
-  if (prevAbort) prevAbort.abort();
-  pollAbort()[POLL_ABORT_KEY] = new AbortController();
-}
-
-function getModuleAbortSignal() {
-  return pollAbort()[POLL_ABORT_KEY]!.signal;
-}
-
 const SubagentParams = Type.Object({
   agent: Type.String({
     description:
@@ -670,10 +649,6 @@ function startSubagent(run: SubagentRun): RunningSubagent {
     ].join("\n"),
   });
 
-  // A dedicated controller: the tool call's own signal completes when it
-  // returns, which is long before the subagent does.
-  const watcherAbort = new AbortController();
-
   const running: RunningSubagent = {
     id: run.id,
     name: run.name,
@@ -683,7 +658,6 @@ function startSubagent(run: SubagentRun): RunningSubagent {
     startTime: run.startTime,
     sessionFile: run.sessionFile,
     launchScriptFile,
-    abortController: watcherAbort,
     liveness: createLiveness({
       id: run.id,
       activityFile: run.activityFile,
@@ -694,9 +668,13 @@ function startSubagent(run: SubagentRun): RunningSubagent {
   return running;
 }
 
-/** Watch one subagent to completion. `children` removes it when this settles. */
-function watchRun(running: RunningSubagent, fromEntry: number) {
-  return watchSubagent(running, running.abortController.signal, fromEntry);
+/**
+ * Watch one subagent to completion. `children` removes it when this settles, and
+ * `signal` is how `children` cancels it — on shutdown, or when this module load
+ * is replaced.
+ */
+function watchRun(running: RunningSubagent, signal: AbortSignal, fromEntry: number) {
+  return watchSubagent(running, signal, fromEntry);
 }
 
 /**
@@ -759,7 +737,7 @@ async function watchSubagent(
   const { name, task, surface, startTime, sessionFile } = running;
 
   try {
-    const result = await pollForExit(surface, AbortSignal.any([signal, getModuleAbortSignal()]), {
+    const result = await pollForExit(surface, signal, {
       interval: 1000,
       sessionFile,
       onTick() {
@@ -1004,7 +982,7 @@ function createChildTransports(
             kind: "resume",
           }),
         // Report only what this run adds, not the transcript it inherited.
-        watch: (running) => watchRun(running, entryCountBefore),
+        watch: (running, signal) => watchRun(running, signal, entryCountBefore),
         settled: (child, result, error) => reportResult(pi, child, result, error),
       });
 
@@ -1035,20 +1013,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
   // Capture the UI context for widget updates
   pi.on("session_start", (_event, ctx) => {
     latestCtx = ctx;
-    // pi runs multiple sessions in one process. A prior session's shutdown
-    // aborts the shared module poll-abort controller; install a fresh one so
-    // subagents spawned in this session aren't watched against a dead signal.
-    // See https://github.com/HazAT/pi-interactive-subagents/issues/5
-    const prevAbort = pollAbort()[POLL_ABORT_KEY];
-    if (!prevAbort || prevAbort.signal.aborted) {
-      pollAbort()[POLL_ABORT_KEY] = new AbortController();
-    }
   });
 
   // Clean up on session shutdown
   pi.on("session_shutdown", (_event, _ctx) => {
-    const moduleAbort = pollAbort()[POLL_ABORT_KEY];
-    if (moduleAbort) moduleAbort.abort();
     children.shutdown();
   });
 
@@ -1097,7 +1065,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           preferred: params.name,
           alsoTaken: () => Object.keys(readNameRegistry(parentArtifactDir)),
           start: (name) => launchSubagent(pi, { ...params, name }, ctx),
-          watch: (child) => watchRun(child, 0),
+          watch: (child, signal) => watchRun(child, signal, 0),
           settled: (child, result, error) => reportResult(pi, child, result, error),
         });
 
