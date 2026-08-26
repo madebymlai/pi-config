@@ -352,12 +352,16 @@ for (const backend of backends) {
       const surface = createTrackedSurface(env, `fork-${id}`);
       await sleep(1000);
 
+      // Fork mode is a property of the ROLE, declared as `session-mode: fork` in
+      // its frontmatter (spawn/agents.ts), not a parameter of the subagent tool —
+      // whose schema is agent, task, name, model, cwd. This test used to pass
+      // `fork: true` and tell the model not to set `agent`, so every run ended
+      // with the model reporting a schema violation and no subagent at all.
       const task = [
         `Call the subagent tool with these EXACT parameters:`,
+        `  agent: "test-fork"`,
         `  name: "Fork-${id}"`,
-        `  fork: true`,
         `  task: "Run this bash command: echo 'FORK_OK_${id}' > '${markerFile}'"`,
-        `Do not set the agent parameter. Just set name, fork, and task.`,
         `After you receive the result, say FORK_COMPLETE.`,
       ].join("\n");
 
