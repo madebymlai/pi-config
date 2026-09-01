@@ -2,7 +2,7 @@
 name: reviewer
 description: Reviews a diff it did not write and reports defects, each with the concrete input or state that triggers it. Use after a change is made and before it is accepted.
 tools: read, grep, find, ls, safe_bash, search_graph, trace_path, get_code_snippet, get_architecture, search_code, check_index_coverage, index_status
-model: deepseek/deepseek-v4-pro
+model: openai-codex/gpt-5.6-sol
 thinking: high
 system-prompt: append
 auto-exit: true

@@ -2,7 +2,7 @@
 name: scout
 description: Fast read-only codebase recon. Locates files and symbols, traces how a flow is wired, maps unfamiliar code before a change.
 tools: read, grep, find, ls, search_graph, trace_path, get_code_snippet, get_architecture, search_code, check_index_coverage, index_status
-model: deepseek/deepseek-v4-flash
+model: openai-codex/gpt-5.6-luna
 thinking: low
 system-prompt: append
 auto-exit: true

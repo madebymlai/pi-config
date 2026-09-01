@@ -83,11 +83,11 @@ If the reply arrives while the sub-agent is still mid-turn, it is absorbed into 
 
 | Agent | Model | Tools | Role |
 | ----- | ----- | ----- | ---- |
-| **scout** | `deepseek/deepseek-v4-flash` | `read`, `grep`, `find`, `ls`, graph tools | Fast read-only codebase recon |
-| **researcher** | `deepseek/deepseek-v4-flash` | `web_search`, `web_fetch`, `safe_bash` | Web research, synthesized into a sourced brief |
-| **worker** | `deepseek/deepseek-v4-pro` | `read`, `write`, `edit`, `bash`, `web_search`, `web_fetch`, graph tools | General implementer |
-| **reviewer** | `deepseek/deepseek-v4-pro` | `read`, `grep`, `find`, `ls`, `safe_bash`, graph tools | Reviews a diff it did not write |
-| **designer** | `deepseek/deepseek-v4-pro` | `read`, `grep`, `find`, `ls`, graph tools | Proposes an interface, builds nothing |
+| **scout** | `openai-codex/gpt-5.6-luna` | `read`, `grep`, `find`, `ls`, graph tools | Fast read-only codebase recon |
+| **researcher** | `openai-codex/gpt-5.6-luna` | `web_search`, `web_fetch`, `safe_bash` | Web research, synthesized into a sourced brief |
+| **worker** | `openai-codex/gpt-5.6-sol` | `read`, `write`, `edit`, `bash`, `web_search`, `web_fetch`, graph tools | General implementer |
+| **reviewer** | `openai-codex/gpt-5.6-sol` | `read`, `grep`, `find`, `ls`, `safe_bash`, graph tools | Reviews a diff it did not write |
+| **designer** | `openai-codex/gpt-5.6-sol` | `read`, `grep`, `find`, `ls`, graph tools | Proposes an interface, builds nothing |
 
 All five are autonomous (`auto-exit: true`) and carry their identity in the system prompt (`system-prompt: append`, except researcher which uses `replace`). The reviewer shares the worker's model, so its independence comes from a fresh context and its own prompt rather than from a different model family. The designer is read-only by design rather than by accident: without a write tool it cannot slide from proposing into building, and several can be dispatched in parallel under different constraints to produce alternatives worth comparing. Each is also told, in that prompt, to `send_message` the orchestrator rather than guess when the task is ambiguous — `send_message` is granted to every sub-agent regardless of its `tools:` line.
 

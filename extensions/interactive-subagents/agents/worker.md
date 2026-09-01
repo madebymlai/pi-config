@@ -2,7 +2,7 @@
 name: worker
 description: Implements a change end to end. Reads, edits and runs code in a repository, then reports what changed and what was verified.
 tools: read, write, edit, bash, web_search, web_fetch, search_graph, trace_path, get_code_snippet, get_architecture, search_code, check_index_coverage, index_status
-model: deepseek/deepseek-v4-pro
+model: openai-codex/gpt-5.6-sol
 thinking: high
 system-prompt: append
 auto-exit: true

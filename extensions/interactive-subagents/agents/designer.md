@@ -2,7 +2,7 @@
 name: designer
 description: Designs an interface for a module and reports the proposal, with its usage, what it hides and where it is weak. Dispatch several in parallel under different constraints to compare alternatives.
 tools: read, grep, find, ls, search_graph, trace_path, get_code_snippet, get_architecture, search_code, check_index_coverage, index_status
-model: deepseek/deepseek-v4-pro
+model: openai-codex/gpt-5.6-sol
 thinking: high
 system-prompt: append
 auto-exit: true
