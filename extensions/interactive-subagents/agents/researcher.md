@@ -2,7 +2,7 @@
 name: researcher
 description: Web research on a question the repository cannot answer. Searches, reads sources in full, returns a short sourced brief.
 tools: web_search, web_fetch, safe_bash
-model: openai-codex/gpt-5.6-luna
+model: deepseek/deepseek-v4-flash
 thinking: medium
 system-prompt: replace
 auto-exit: true
