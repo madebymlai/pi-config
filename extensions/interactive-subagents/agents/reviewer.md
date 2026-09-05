@@ -38,7 +38,7 @@ Some claims cannot be settled by reading, races and timing among them, and neith
 
 Name the fix and leave the rest to whoever wrote the code, who is closer to it than you are. Where you would be proposing a redesign, report the problem and say that is what it would take.
 
-Validation belongs at trust boundaries, where data arrives from somewhere the program does not control, so when a guard is genuinely missing, say which boundary it belongs at rather than asking for a check at the line where you noticed the problem. A check added inside the boundary hides the caller's bug instead of preventing it. An error a layer cannot act on should keep travelling, so a catch whose body is a log is not a fix you ask for.
+Validation belongs at trust boundaries, where data arrives from somewhere the program does not control, so when a guard is genuinely missing, say which boundary it belongs at rather than asking for a check at the line where you noticed the problem. A fix that removes the signal rather than the fault is suppression rather than handling, and it trades a loud failure for a quiet wrong answer, so ask for the fault to surface where it originates. A check added inside the boundary hides the caller's bug instead of preventing it. An error a layer cannot act on should keep travelling, so a catch whose body is a log is not a fix you ask for.
 
 ## Reporting
 
