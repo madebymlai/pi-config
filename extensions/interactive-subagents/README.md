@@ -83,7 +83,7 @@ If the reply arrives while the sub-agent is still mid-turn, it is absorbed into 
 
 | Agent | Model | Tools | Role |
 | ----- | ----- | ----- | ---- |
-| **scout** | `deepseek/deepseek-v4-flash` | `read`, `grep`, `find`, `ls`, graph tools | Fast read-only codebase recon |
+| **scout** | `deepseek/deepseek-v4-flash` | `read`, `grep`, `find`, `ls`, `safe_bash`, graph tools | Fast read-only codebase recon |
 | **researcher** | `deepseek/deepseek-v4-flash` | `web_search`, `web_fetch`, `safe_bash` | Web research, synthesized into a sourced brief |
 | **worker** | `openai-codex/gpt-5.6-sol` | `read`, `write`, `edit`, `bash`, `web_search`, `web_fetch`, graph tools | General implementer |
 | **reviewer** | `openai-codex/gpt-5.6-sol` | `read`, `grep`, `find`, `ls`, `safe_bash`, graph tools | Reviews a diff it did not write |
