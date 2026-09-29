@@ -165,10 +165,12 @@ export function createSurfaceSplit(
 /**
  * Send a command string to a pane and execute it.
  * Typed literally (`-l`) so special characters are not interpreted as keys,
- * then submitted with Enter.
+ * then submitted with Enter. Any pane mode (copy mode after a scroll) is
+ * cancelled first; otherwise the text is read as mode key bindings instead.
  */
 export function sendCommand(surface: string, command: string): void {
   requireTmux();
+  execFileSync("tmux", ["copy-mode", "-q", "-t", surface], { encoding: "utf8" });
   execFileSync("tmux", ["send-keys", "-t", surface, "-l", command], { encoding: "utf8" });
   execFileSync("tmux", ["send-keys", "-t", surface, "Enter"], { encoding: "utf8" });
 }

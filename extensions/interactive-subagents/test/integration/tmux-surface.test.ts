@@ -10,6 +10,7 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { unlinkSync } from "node:fs";
 import {
   getAvailableBackends,
@@ -105,6 +106,25 @@ for (const backend of backends) {
 
       closeSurface(surface);
       untrackSurface(env, surface);
+    });
+
+    it("delivers text to a pane the user left in copy mode", async () => {
+      const surface = createTrackedSurface(env, "copy-mode-test");
+      await sleep(1000);
+
+      // Scrolling a pane leaves it in copy mode, where typed keys are mode
+      // bindings: "g" opens goto-line, "q" cancels, and the rest fails with
+      // "not in a mode". The text must reach the program instead.
+      execFileSync("tmux", ["copy-mode", "-t", surface]);
+      const marker = uniqueId();
+      sendCommand(surface, `echo "Integration now includes replay: $((40+2))_${marker}"`);
+      await sleep(1500);
+
+      const screen = readScreen(surface, 50);
+      assert.ok(
+        screenContains(screen, `Integration now includes replay: 42_${marker}`),
+        `Expected the command to run. Got:\n${screen}`,
+      );
     });
 
     it("preserves shell special characters in echo output", async () => {
