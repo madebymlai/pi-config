@@ -2,7 +2,7 @@
 name: worker
 description: Implements a change end to end. Reads, edits and runs code in a repository, then reports what changed and what was verified.
 tools: read, write, edit, bash, web_search, web_fetch, search_graph, trace_path, get_code_snippet, get_architecture, search_code, check_index_coverage, index_status
-model: openai-codex/gpt-6-sol
+model: openai-codex/gpt-6-astra
 thinking: medium
 system-prompt: append
 auto-exit: true
