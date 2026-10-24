@@ -297,6 +297,7 @@ export function registerSendMessage(
       "Ask one thing per message. Make separate calls for unrelated questions.",
       "Give enough context that the recipient can act without re-reading your whole task.",
       "After messaging the agent that spawned you, stop and wait. Their reply arrives as your next turn.",
+      "Deliver your result as your final message. It reaches the agent that spawned you on its own.",
     ],
 
     parameters: Type.Object({
@@ -312,7 +313,7 @@ export function registerSendMessage(
       message: Type.String({
         description:
           "What to say: a follow-up instruction for a running sub-agent, the next task for a " +
-          "finished one, or a question or report for the agent that spawned you.",
+          "finished one, or a question for the agent that spawned you.",
       }),
     }),
 
