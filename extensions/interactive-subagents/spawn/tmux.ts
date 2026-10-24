@@ -245,15 +245,35 @@ export async function readScreenAsync(surface: string, lines = 50): Promise<stri
  */
 export function closeSurface(surface: string): void {
   requireTmux();
-  execFileSync("tmux", ["kill-pane", "-t", surface], { encoding: "utf8" });
+  if (surfaceExists(surface)) {
+    execFileSync("tmux", ["kill-pane", "-t", surface], { encoding: "utf8" });
+  }
   rebalanceSurfaces();
+}
+
+/**
+ * Whether the pane is still there. A pane closed from outside (the user, a
+ * kill-pane, a crash) leaves neither a sidecar nor a sentinel behind.
+ */
+function surfaceExists(surface: string): boolean {
+  // display-message succeeds with empty output for a missing pane, so the
+  // answer is in what it prints, not in its exit status.
+  try {
+    const paneId = execFileSync("tmux", ["display-message", "-p", "-t", surface, "#{pane_id}"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return paneId.trim() === surface;
+  } catch {
+    return false;
+  }
 }
 
 // ── Exit polling ──
 
 export interface PollResult {
   /** How the subagent exited */
-  reason: "done" | "sentinel" | "error";
+  reason: "done" | "sentinel" | "error" | "closed";
   /** Shell exit code (from sentinel). 0 for file-based exits. */
   exitCode: number;
   /** Error message if reason is "error" (auto-retry exhausted, provider overload, etc.) */
@@ -337,6 +357,9 @@ export async function pollForExit(
             return interpretExitSidecar(data);
           }
         } catch {}
+      }
+      if (isTmuxAvailable() && !surfaceExists(surface)) {
+        return { reason: "closed", exitCode: 1 };
       }
     }
 

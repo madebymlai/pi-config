@@ -27,6 +27,7 @@ import {
   readScreen,
   readScreenAsync,
   closeSurface,
+  pollForExit,
   sleep,
   uniqueId,
   trackTempFile,
@@ -201,6 +202,18 @@ for (const backend of backends) {
 
       assert.ok(screenContains(screen1, `S1_${m1}`), `Surface 1 missing marker. Got:\n${screen1}`);
       assert.ok(screenContains(screen2, `S2_${m2}`), `Surface 2 missing marker. Got:\n${screen2}`);
+    });
+
+    it("reports a pane closed before the subagent finished, rather than waiting forever", async () => {
+      const surface = createTrackedSurface(env, "closed-early");
+      await sleep(1000);
+      execFileSync("tmux", ["kill-pane", "-t", surface]);
+      untrackSurface(env, surface);
+
+      const result = await pollForExit(surface, AbortSignal.timeout(5_000), { interval: 50 });
+
+      assert.equal(result.reason, "closed");
+      assert.notEqual(result.exitCode, 0);
     });
 
     it("writes output to a file and verifies via surface", async () => {

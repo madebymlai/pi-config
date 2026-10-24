@@ -32,6 +32,7 @@ import {
   readScreen,
   readScreenAsync,
   closeSurface,
+  pollForExit,
   shellEscape,
 } from "../../spawn/tmux.ts";
 
@@ -44,6 +45,7 @@ export {
   readScreen,
   readScreenAsync,
   closeSurface,
+  pollForExit,
   shellEscape,
 };
 
