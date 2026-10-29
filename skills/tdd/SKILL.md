@@ -11,7 +11,7 @@ The usual case for test-first is managing fear and getting feedback in small ste
 
 A **seam** is the public boundary where behavior is observable without reaching inside. Tests live at seams and nowhere else, so a test that reads private state, swaps an internal collaborator, or checks the result through a side channel such as querying storage directly is testing the implementation, and it breaks on the next refactor that changes no behavior at all.
 
-Work from the seams the brief names. When it names none, or the right boundary is not obvious, ask whoever dispatched you rather than picking one and building on it, because a test at a seam nobody agreed to is work that gets thrown away.
+Work from the seams the brief names. When it names none, or the right boundary is not obvious, ask whoever dispatched you rather than picking one and building on it, because a test at a seam nobody agreed to is work that gets thrown away. Propose each candidate seam with a line on what it catches and what it misses, so the choice can be made on the spot.
 
 ## Where the answer comes from
 
