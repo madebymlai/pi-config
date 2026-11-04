@@ -374,18 +374,9 @@ const AUTONOMOUS_FLOOR: Array<{ pattern: RegExp; reason: string }> = [
 	{ pattern: /\bgit\s+gc\b[^#\n]*--prune\b/, reason: "prune unreachable objects (git gc --prune)" },
 ];
 
-// Warning shown via ctx.ui.setStatus when bash-guard is disabled. Pi joins all
-// extension statuses on a single line sorted alphabetically by key, so:
-//
-// - Key has a leading space so it sorts before any letter-keyed extension,
-//   guaranteeing the warning stays visible (truncateToWidth chops the right).
-// - We deliberately do NOT pad the text to full width — that would push other
-//   extensions' statuses off-screen via truncation.
-// - Background is truecolor pure red (#FF0000) instead of the basic palette
-//   color 41 (which terminals remap per theme, often appearing brown/orange).
-//   Foreground is truecolor white for high contrast on pure red.
-// - NBSPs (U+00A0) handle intra-warning spacing because the footer's
-//   sanitizeStatusText collapses runs of ASCII spaces via / +/g.
+// Publish both states so custom footers can distinguish an enabled guard from
+// an unloaded guard. The leading space prioritizes the warning in Pi's default
+// alphabetically sorted status row; keep the badge compact for other statuses.
 const BASH_GUARD_STATUS_KEY = " bash-guard";
 
 export default function (pi: ExtensionAPI) {
@@ -416,6 +407,7 @@ export default function (pi: ExtensionAPI) {
 			);
 			ctx.ui.setStatus(BASH_GUARD_STATUS_KEY, badge);
 		}
+		if (!disabled) ctx.ui.setStatus(BASH_GUARD_STATUS_KEY, ctx.ui.theme.fg("success", "BG ON"));
 	});
 
 	pi.registerCommand("bash-guard", {
@@ -434,7 +426,7 @@ export default function (pi: ExtensionAPI) {
 					"warning",
 				);
 			} else {
-				ctx.ui.setStatus(BASH_GUARD_STATUS_KEY, undefined);
+				ctx.ui.setStatus(BASH_GUARD_STATUS_KEY, ctx.ui.theme.fg("success", "BG ON"));
 				ctx.ui.notify("bash-guard re-enabled.", "info");
 			}
 		},

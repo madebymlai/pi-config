@@ -43,6 +43,12 @@ export const paths = {
   /** The extension injected with `-e` into every subagent session. */
   childEntry: join(PACKAGE_ROOT, "child", "index.ts"),
 
+  /** Shared presentation is optional when this package is installed without pi-config. */
+  get childExtensions(): string[] {
+    const footer = join(this.siblingExtensions, "powerline-footer", "index.ts");
+    return existsSync(footer) ? [this.childEntry, footer] : [this.childEntry];
+  },
+
   /** Standalone right-pane agent picker (no model/session of its own). */
   surfaceListEntry: join(PACKAGE_ROOT, "scripts", "surface-list.ts"),
 

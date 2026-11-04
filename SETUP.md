@@ -34,3 +34,9 @@ Add the included theme to `~/.pi/agent/settings.json` while keeping your existin
 ```
 
 Pi will load the extensions, skills, and theme from their directories the next time it starts.
+
+## Single-row footer
+
+`extensions/powerline-footer/` is included and auto-discovered alongside the other extensions. It uses Catppuccin Mocha colours independently of the chosen application theme. A Powerline-capable terminal font is recommended.
+
+If your installation uses individual symlinks rather than copying this repository into `~/.pi/agent`, also link `extensions/powerline-footer` into `~/.pi/agent/extensions/`, then run `/reload`. The interactive-subagents launcher explicitly loads the same footer for fresh and resumed agents, including restricted sessions.

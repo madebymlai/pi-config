@@ -474,8 +474,7 @@ async function launchSubagent(
   const parts: string[] = ["pi"];
   parts.push("--session", shellEscape(subagentSessionFile));
 
-  const subagentDonePath = paths.childEntry;
-  parts.push("-e", shellEscape(subagentDonePath));
+  for (const extension of paths.childExtensions) parts.push("-e", shellEscape(extension));
 
   // Resolve the config dir the child sees: a target-local .pi/agent/ wins,
   // else the propagated global dir. Captured once so the launch env and the
@@ -938,9 +937,8 @@ function createChildTransports(
       // Build pi resume command
       const parts = ["pi", "--session", shellEscape(sessionPath)];
 
-      // Load subagent-done extension so the agent can self-terminate if needed
-      const subagentDonePath = paths.childEntry;
-      parts.push("-e", shellEscape(subagentDonePath));
+      // Replay the same lifecycle and presentation extensions as a fresh launch.
+      for (const extension of paths.childExtensions) parts.push("-e", shellEscape(extension));
 
       const sessionId = ctx.sessionManager.getSessionId();
       const artifactDir = getArtifactDir(ctx.sessionManager.getSessionDir(), sessionId);
