@@ -22,7 +22,7 @@ Async subagents for [pi](https://github.com/badlogic/pi-mono), running in tmux p
 ```
 
 - **Click a row or press Enter** to replace the list with that agent's live terminal in the right half. Use **↑/↓**, **Home/End**, or **PgUp/PgDn** to navigate the list.
-- **← on an empty prompt**, in either the main session or an agent, opens and focuses the list (or the sole agent when there is only one). With a draft, ← retains its normal cursor movement; dialog arrows are untouched.
+- **← on an empty prompt**, in either the main session or an agent, opens and focuses the list—even with just one agent. An explicitly chosen list stays visible through count changes until you open an agent or the count reaches zero. With a draft, ← retains its normal cursor movement; dialog arrows are untouched.
 - **Ctrl+Alt+A from either pane** does the same even with a draft or a focused dialog. The shortcut is listed in Pi's `/hotkeys`; switching views preserves the draft and leaves agents running.
 - **Esc in the list** focuses the main session without changing the right pane. ← does nothing in the list, so holding it cannot bounce focus back and forth.
 - **Ctrl+Z retains Pi's normal suspend behavior** in main and agent sessions. There is no browse command to run: the layout follows the number of agents automatically.
@@ -33,7 +33,7 @@ The list keeps its running count without repeating the pane title. It uses align
 
 The list uses its own fullscreen TUI, so clicks do not depend on the main Pi session's display mode. If tmux intercepts clicks rather than forwarding them, enable mouse support with `tmux set -g mouse on`.
 
-Hidden agents keep running concurrently, and results are steered back independently as each finishes. When only one agent remains, it is shown directly. At zero agents, the empty list holds the right-hand slot for **30 seconds**, then Main expands to full width. An agent starting during that grace period cancels the collapse. With multiple agents remaining, closing the visible agent returns to the list; closing a hidden agent preserves the selected view. Session shutdown or reload cancels any pending collapse and cleans up the list and all owned panes. The main widget is a one-line count rather than a second copy of the list.
+Hidden agents keep running concurrently, and results are steered back independently as each finishes. When only one agent remains, it is shown directly unless you explicitly chose the list. At zero agents, the view choice resets and the empty list holds the right-hand slot for **30 seconds**, then Main expands to full width. An agent starting during that grace period cancels the collapse and opens directly. With multiple agents remaining, closing the visible agent returns to the list; closing a hidden agent preserves the selected view. Session shutdown or reload cancels any pending collapse and cleans up the list and all owned panes. The main widget is a one-line count rather than a second copy of the list.
 
 If your shell startup is slow and launch commands get dropped before the prompt is ready, raise the delay:
 

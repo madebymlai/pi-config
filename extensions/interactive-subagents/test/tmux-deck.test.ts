@@ -30,6 +30,51 @@ after(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+it("opens the list with one agent from either pane and leaves it visible when focusing Main", () => {
+  try {
+    const agent = surfaces.createSurface("Only", "worker");
+    assert.deepEqual(panes(), [main, agent], "one agent is still the automatic initial view");
+    surfaces.showSurfaceList();
+    const list = panes().find(pane => pane !== main)!;
+    assert.notEqual(list, agent, "explicit browsing must open the list, not refocus the sole agent");
+    assert.match(tmux("display-message", "-p", "-t", list, "#{E:pane-border-format}"), /Agents list/);
+    assert.ok(focused(list));
+    crossProcess(list, "s.focusSurfaceParent()");
+    assert.deepEqual(panes(), [main, list], "Esc changes focus, not the chosen view");
+    assert.ok(focused(main));
+    crossProcess(list, `s.showSurface(${JSON.stringify(agent)})`);
+    assert.deepEqual(panes(), [main, agent]);
+    crossProcess(agent, "s.returnToSurfaceList()");
+    assert.deepEqual(panes(), [main, list], "navigation from the sole child also opens the list");
+    assert.ok(focused(list));
+  } finally {
+    surfaces.disposeSurfaces();
+  }
+});
+
+it("keeps an explicitly chosen list through count changes until an agent is opened", () => {
+  try {
+    const a = surfaces.createSurface("Alpha", "worker");
+    const b = surfaces.createSurface("Beta", "scout");
+    const list = panes().find(pane => pane !== main)!;
+    crossProcess(a, "s.returnToSurfaceList()");
+    crossProcess(list, "s.focusSurfaceParent()");
+    const c = surfaces.createSurface("Gamma", "reviewer");
+    assert.deepEqual(panes(), [main, list], "two to three preserves the chosen list");
+    surfaces.closeSurface(c);
+    assert.deepEqual(panes(), [main, list], "three to two preserves the chosen list");
+    surfaces.closeSurface(b);
+    assert.deepEqual(panes(), [main, list], "two to one preserves the chosen list");
+    assert.ok(focused(main), "background count changes do not steal focus from Main");
+    crossProcess(list, `s.showSurface(${JSON.stringify(a)})`);
+    assert.deepEqual(panes(), [main, a], "opening an agent replaces the list choice");
+    surfaces.createSurface("Delta", "scout");
+    assert.deepEqual(panes(), [main, a], "the chosen agent is preserved instead of the old list choice");
+  } finally {
+    surfaces.disposeSurfaces();
+  }
+});
+
 it("shows the sole agent at one, the list from two, and collapses after 30 idle seconds", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   try {
@@ -37,12 +82,12 @@ it("shows the sole agent at one, the list from two, and collapses after 30 idle 
     assert.deepEqual(panes(), [main, a], "the first agent is shown directly");
     assert.ok(focused(main), "creating the first agent does not steal focus");
     surfaces.showSurfaceList();
-    assert.deepEqual(panes(), [main, a], "browsing one agent never opens a redundant list");
-    assert.ok(focused(a));
+    const list = panes().find(pane => pane !== main)!;
+    assert.notEqual(list, a, "explicit browsing opens the list even with one agent");
+    assert.ok(focused(list));
     surfaces.focusSurfaceParent();
     const b = surfaces.createSurface("Beta", "scout");
-    const list = tmux("display-message", "-p", "-t", main, "#{@pi-deck-list}");
-    assert.deepEqual(panes(), [main, list], "the second agent introduces the list");
+    assert.deepEqual(panes(), [main, list], "the second agent keeps the chosen list");
     assert.ok(focused(main));
     surfaces.showSurface(a);
     const c = surfaces.createSurface("Gamma", "reviewer");
@@ -51,8 +96,8 @@ it("shows the sole agent at one, the list from two, and collapses after 30 idle 
     assert.deepEqual(panes(), [main, a], "three to two preserves a selected agent");
     surfaces.showSurfaceList();
     surfaces.closeSurface(b);
-    assert.deepEqual(panes(), [main, a], "two to one replaces the list with the survivor");
-    assert.ok(focused(a), "right-hand focus follows the replacement");
+    assert.deepEqual(panes(), [main, list], "two to one preserves the explicitly chosen list");
+    assert.ok(focused(list), "the chosen list keeps focus");
     surfaces.closeSurface(a);
     assert.deepEqual(panes(), [main, list], "the empty list holds the right slot during the grace period");
     t.mock.timers.tick(29_000);

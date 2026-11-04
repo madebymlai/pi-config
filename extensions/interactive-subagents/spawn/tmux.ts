@@ -206,15 +206,19 @@ function reconcileDeck(deck: Deck, reason: "create" | "close" | "browse", focus 
   const children = ownedPanes(deck, true).filter(pane => pane !== deck.list);
   const visible = ownedPanes(deck)[0];
   if (children.length === 0) {
+    tmux("set-option", "-pu", "-t", deck.parent, "@pi-deck-selected");
     if (reason === "close" && visible) scheduleIdleCollapse(deck);
     if (focus) tmux("select-pane", "-t", deck.parent);
     return;
   }
   cancelIdleCollapse(deck);
-  if (children.length === 1) {
+  const selected = paneOption(deck.parent, "selected");
+  if (selected === deck.list) {
+    reveal(deck, deck.list, focus);
+  } else if (children.length === 1) {
     reveal(deck, children[0], focus);
-  } else if (!visible || reason === "browse" ||
-    (reason === "create" && children.length === 2 && paneOption(deck.parent, "selected") !== visible)) {
+  } else if (!visible ||
+    (reason === "create" && children.length === 2 && selected !== visible)) {
     reveal(deck, deck.list, focus);
   } else if (focus) {
     tmux("select-pane", "-t", visible);
@@ -246,7 +250,7 @@ export function showSurfaceList(): void {
   requireTmux();
   const deck = deckFor();
   if (deck) {
-    tmux("set-option", "-pu", "-t", deck.parent, "@pi-deck-selected");
+    tmux("set-option", "-p", "-t", deck.parent, "@pi-deck-selected", deck.list);
     reconcileDeck(deck, "browse");
   }
 }
