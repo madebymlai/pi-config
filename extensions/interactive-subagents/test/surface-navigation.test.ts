@@ -80,7 +80,10 @@ it("click opens an agent; empty left and Ctrl+Alt+A return without losing a draf
     assert.ok(screen(b).includes("drafXt"), "the draft survives switching views");
     tmux("send-keys", "-t", b, "C-e", "C-u", "Left");
     await waitUntil(() => visible().includes(list), () => screen(b));
-    tmux("send-keys", "-t", list, "Left");
+    tmux("send-keys", "-t", list, "Left", "Left", "Left", "Down");
+    await waitUntil(() => screen(list).includes("→ Scout"), () => screen(list));
+    assert.equal(tmux("display-message", "-p", "-t", list, "#{pane_active}"), "1", "left repeats must not bounce focus back to main");
+    tmux("send-keys", "-t", list, "Escape");
     await waitUntil(() => tmux("display-message", "-p", "-t", main, "#{pane_active}") === "1", () => "main did not regain focus");
     await mock.emit("session_shutdown", {}, ctx);
     assert.deepEqual(visible(), [main]);

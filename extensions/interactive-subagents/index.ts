@@ -1,14 +1,14 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import {
   formatAgentLine,
   NO_AGENTS_MESSAGE,
   readListedAgents,
 } from "./render/agent-list.ts";
 import { renderSubagentCall, renderSubagentToolResult } from "./render/subagent-tool.ts";
-import { AGENT_LIST_HINT, registerSurfaceNavigation } from "./render/navigation.ts";
+import { registerSurfaceNavigation } from "./render/navigation.ts";
 import {
   readSubagentResultDetails,
   renderSubagentResult,
@@ -284,11 +284,7 @@ function paintWidget(live: readonly RunningSubagent[]) {
       invalidate() {},
       render(width: number) {
         const label = `${live.length} subagent${live.length === 1 ? "" : "s"}`;
-        const available = Math.max(0, width - visibleWidth(label) - 3);
-        const hint = truncateToWidth(available >= visibleWidth(AGENT_LIST_HINT)
-          ? AGENT_LIST_HINT : "Ctrl+Alt+A  Agents", available, "");
-        const gap = " ".repeat(Math.max(1, width - visibleWidth(label) - visibleWidth(hint)));
-        return [truncateToWidth(theme.fg("accent", label) + gap + theme.fg("muted", hint), width)];
+        return [truncateToWidth(theme.fg("accent", label), width)];
       },
     }),
     { placement: "aboveEditor" },

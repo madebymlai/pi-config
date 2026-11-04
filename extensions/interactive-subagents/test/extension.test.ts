@@ -48,7 +48,7 @@ function entry(id: string, name = id): RunningSubagent {
 const forever = () => new Promise<void>(() => {});
 
 describe("extension wiring", () => {
-  it("keeps the main widget compact and points to the right-hand agent list", async () => {
+  it("keeps the main widget to the running count without shortcut hints", async () => {
     const { api, emit } = createMockExtensionApi();
     const ui = createMockContext();
     const children = createChildren();
@@ -60,11 +60,7 @@ describe("extension wiring", () => {
       const factory = ui.currentWidget() as Function;
       const lines = factory({}, ui.ctx.ui.theme).render(80);
       assert.equal(lines.length, 1, "the full agent list belongs in the right pane, not above the main input");
-      assert.match(lines[0], /2 subagents/);
-      assert.match(lines[0], /← empty prompt/);
-      assert.match(lines[0], /Ctrl\+Alt\+A/);
-      assert.doesNotMatch(lines[0], /subagent-view/);
-      assert.doesNotMatch(lines[0], /[·•]/, "navigation uses spacing, not dot separators");
+      assert.deepEqual(lines, ["2 subagents"]);
     } finally {
       children.shutdown();
     }

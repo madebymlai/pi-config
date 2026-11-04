@@ -2,7 +2,7 @@ import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendi
 import { matchesKey } from "@earendil-works/pi-tui";
 import { showSurfaceList } from "../spawn/tmux.ts";
 
-export const AGENT_LIST_HINT = "← empty prompt / Ctrl+Alt+A  Agents";
+export const AGENT_LIST_HINT = "← empty prompt / Ctrl+Alt+A  Agents list";
 
 /** Shared navigation for the main session and children, without changing Pi's suspend key. */
 export function registerSurfaceNavigation(pi: ExtensionAPI, canBrowse: () => boolean = () => true): void {
@@ -28,6 +28,11 @@ export function registerSurfaceNavigation(pi: ExtensionAPI, canBrowse: () => boo
     cleanup = undefined;
     if (ctx.mode !== "tui") return;
 
+    // Pi adds one footer row when any extension status exists. Reserve it in
+    // both panes, so a warning in only one session cannot shift its editor.
+    // Empty text occupies the row without copying another session's warning.
+    ctx.ui.setStatus("subagent-footer", "");
+
     // Only the dedicated shortcut is global: raw left-arrow interception would
     // steal navigation from dialogs whenever the underlying prompt was empty.
     const unsubscribe = ctx.ui.onTerminalInput((data) => {
@@ -52,6 +57,7 @@ export function registerSurfaceNavigation(pi: ExtensionAPI, canBrowse: () => boo
     ctx.ui.setEditorComponent(factory);
     cleanup = () => {
       unsubscribe();
+      ctx.ui.setStatus("subagent-footer", undefined);
       // Don't replace an editor installed by another extension after ours.
       if (ctx.ui.getEditorComponent() === factory) ctx.ui.setEditorComponent(previous);
     };

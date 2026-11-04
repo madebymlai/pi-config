@@ -34,10 +34,10 @@ test("aligns agent, activity and elapsed columns with shortcuts in a separate fo
   assert.equal(lines[3].indexOf("reading"), lines[4].indexOf("bash"));
   assert.equal(visibleWidth(lines[3]), visibleWidth(lines[4]), "elapsed values share a right edge");
   assert.doesNotMatch(lines.join("\n"), /[·•]/);
-  assert.match(lines.at(-3)!, /^─+$/);
-  assert.match(lines.at(-2)!, /Enter/);
-  assert.match(lines.at(-1)!, /Ctrl\+Alt\+A/);
-  assert.doesNotMatch(lines.slice(0, -3).join("\n"), /Ctrl\+Alt|Enter/);
+  assert.match(lines.at(-2)!, /^─+$/);
+  assert.match(lines.at(-1)!, /Enter.*Esc.*Main/);
+  assert.doesNotMatch(lines.join("\n"), /From a session|Ctrl\+Alt|empty prompt/);
+  assert.doesNotMatch(lines.slice(0, -2).join("\n"), /Enter/);
 });
 
 test("click opens the visible row, not the header or scroll indicator", () => {
@@ -53,11 +53,11 @@ test("click opens the visible row, not the header or scroll indicator", () => {
 
 test("paging and mouse scrolling reach many agents within a bounded viewport", () => {
   const { list, opened } = setup(Array.from({ length: 100 }, (_, i) => row(String(i))));
-  list.setHeight(12); // 3 header lines, 5 agents, scroll indicator, 3 footer lines
+  list.setHeight(11); // 3 header lines, 5 agents, scroll indicator, 2 footer lines
   list.handleInput("\x1b[6~");
   list.handleInput("\r");
   assert.deepEqual(opened, ["5"]);
-  assert.equal(list.render(40).length, 12);
+  assert.equal(list.render(40).length, 11);
   list.handleInput("\x1b[F");
   list.handleInput("\r");
   assert.deepEqual(opened, ["5", "99"]);
@@ -96,11 +96,12 @@ test("back shortcuts and failed callbacks never terminate the component", async 
   let backs = 0;
   const list = new SurfaceList({ onSelect: async () => { throw new Error("cannot open"); }, onBack: () => { backs++; } });
   list.update({ rows: [row("a")], showStatus: true });
-  for (const key of ["\x1b[D", "\x1b", "\x03"]) list.handleInput(key);
-  assert.equal(backs, 3, "left, Escape and Ctrl+C return focus to main");
-  list.handleInput("\x1a");
-  list.handleInput("\x1b\x01");
-  assert.equal(backs, 3, "neither the retired Ctrl+Z binding nor open-list shortcut should leave the list");
+  for (let repeat = 0; repeat < 10; repeat++) list.handleInput("\x1b[D");
+  for (const key of ["\x03", "\x1a", "\x1b\x01"]) list.handleInput(key);
+  assert.equal(backs, 0, "left repeats and other shortcuts must not bounce focus back to main");
+  list.handleInput("\x1b");
+  assert.equal(backs, 1, "only Escape returns focus to main");
+  assert.doesNotMatch(stripTerminalSequences(list.render(100).join("\n")), /←\/?Esc|←\s+Main/);
   assert.doesNotMatch(list.render(100).join("\n"), /Ctrl\+Z/);
   list.handleInput("\r");
   await Promise.resolve();

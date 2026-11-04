@@ -77,8 +77,8 @@ export function parseSurfaceListSnapshot(text: string): SurfaceListSnapshot | un
 
 export class SurfaceList implements Component {
   private data: SurfaceListSnapshot = { rows: [], showStatus: true };
-  private list = new SelectList([], 7, theme);
-  private maxVisible = 7;
+  private list = new SelectList([], 8, theme);
+  private maxVisible = 8;
   private height = 14;
   private error = "";
   private options: Options;
@@ -129,7 +129,7 @@ export class SurfaceList implements Component {
   }
 
   private footerHeight(): number {
-    return this.height >= 10 ? 3 : this.height >= 4 ? 1 : 0;
+    return this.height >= 10 ? 2 : this.height >= 4 ? 1 : 0;
   }
 
   private selectedIndex(): number {
@@ -157,13 +157,12 @@ export class SurfaceList implements Component {
       .slice(0, this.headerHeight());
     const actions = this.error ? `Error: ${this.error}`
       : width >= 64
-        ? `${bold("↑↓")} Select   ${bold("PgUp/PgDn")} Page   ${bold("Enter/click")} Open   ${bold("←/Esc")} Main`
-        : `${bold("Enter")} Open   ${bold("←/Esc")} Main`;
-    const footer = this.footerHeight() === 3
-      ? [dim("─".repeat(Math.max(0, width))), actions,
-          dim(width >= 64 ? "From a session   ← empty prompt    Ctrl+Alt+A  Agent list" : "Ctrl+Alt+A  Agent list")]
+        ? `${bold("↑↓")} Select   ${bold("PgUp/PgDn")} Page   ${bold("Enter/click")} Open   ${bold("Esc")} Main`
+        : `${bold("Enter")} Open   ${bold("Esc")} Main`;
+    const footer = this.footerHeight() === 2
+      ? [dim("─".repeat(Math.max(0, width))), actions]
       : this.footerHeight() === 1
-        ? [this.error ? `Error: ${this.error}` : "Enter  Open    ←  Main"]
+        ? [this.error ? `Error: ${this.error}` : "Enter  Open    Esc  Main"]
         : [];
     const bodyHeight = this.height - header.length - footer.length;
     const body = this.data.rows.length ? this.list.render(Math.max(4, width)) : [dim("  No running agents")];
@@ -173,7 +172,7 @@ export class SurfaceList implements Component {
   }
 
   handleInput(data: string): void {
-    if ((["left", "ctrl+c", "escape"] as const).some((key) => matchesKey(data, key))) {
+    if (matchesKey(data, "escape")) {
       this.invoke(this.options.onBack);
     } else if (matchesKey(data, "pageUp")) {
       this.list.setSelectedIndex(this.selectedIndex() - this.maxVisible);
