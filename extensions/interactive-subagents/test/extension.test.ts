@@ -1,5 +1,11 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { disposeSurfaces } from "../spawn/tmux.ts";
+import { registerName } from "../store/name-registry.ts";
 import * as subagentsModule from "../index.ts";
 import { createChildren, type RunningSubagent } from "../spawn/children.ts";
 import type { SubagentLiveness } from "../observe/liveness.ts";
@@ -48,6 +54,48 @@ function entry(id: string, name = id): RunningSubagent {
 const forever = () => new Promise<void>(() => {});
 
 describe("extension wiring", () => {
+  it("labels fresh and resumed panes with the display name and actual role", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-header-wiring-"));
+    const socket = join(dir, "socket");
+    const tmux = (...args: string[]) => execFileSync("tmux", ["-S", socket, ...args], { encoding: "utf8" }).trim();
+    const saved = { TMUX: process.env.TMUX, TMUX_PANE: process.env.TMUX_PANE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR };
+    const children = createChildren();
+    try {
+      const main = tmux("-f", "/dev/null", "new-session", "-d", "-s", "headers", "-x", "160", "-y", "40", "-P", "-F", "#{pane_id}", "sleep 600");
+      // New panes never read the typed launch commands: no real agent is started.
+      tmux("set-option", "-g", "default-command", "sleep 600");
+      process.env.TMUX = `${socket},0,0`;
+      process.env.TMUX_PANE = main;
+      process.env.PI_CODING_AGENT_DIR = dir;
+      const { api, registeredTools } = createMockExtensionApi();
+      const { ctx } = createMockContext({ sessionDir: dir, sessionId: "parent" });
+      ctx.cwd = dir;
+      ctx.sessionManager.getSessionFile = () => join(dir, "parent.jsonl");
+      subagentsModule.default(api, { children });
+      const spawn = registeredTools.find(t => t.name === "subagent")!;
+      const out = await spawn.execute("spawn", { agent: "scout", name: "Ada", task: "inspect" }, undefined, undefined, ctx);
+      assert.equal(children.live().length, 1, JSON.stringify(out));
+      const fresh = children.live()[0];
+      assert.equal(tmux("show-options", "-pqv", "-t", fresh.surface, "@pi-label"), "Ada (scout)");
+      const session = join(dir, "finished.jsonl");
+      writeFileSync(session, "");
+      writeFileSync(`${session}.loadout.json`, JSON.stringify({ agent: "reviewer", toolAllowlist: null, model: null, thinking: null, systemPromptMode: null, identity: null, autoExit: true, cwd: dir, agentDir: dir }));
+      registerName(join(dir, "artifacts", "parent"), "Grace", { sessionFile: session, sessionId: "finished" });
+      const send = registeredTools.find(t => t.name === "send_message")!;
+      const resumed = await send.execute("resume", { to: "Grace", message: "continue" }, undefined, undefined, ctx);
+      assert.equal(resumed.details.status, "resumed");
+      const running = children.live().find(c => c.name === "Grace")!;
+      assert.equal(tmux("show-options", "-pqv", "-t", running.surface, "@pi-label"), "Grace (reviewer)");
+    } finally {
+      children.shutdown();
+      disposeSurfaces();
+      tmux("kill-server");
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it("keeps the main widget to the running count without shortcut hints", async () => {
     const { api, emit } = createMockExtensionApi();
     const ui = createMockContext();

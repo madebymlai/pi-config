@@ -27,7 +27,8 @@ test("aligns agent, activity and elapsed columns with shortcuts in a separate fo
   const { list } = setup(rows);
   list.setHeight(14);
   const lines = list.render(90).map(stripTerminalSequences);
-  assert.match(lines[0], /^Subagents\s+2 running$/);
+  assert.equal(lines[0], " ".repeat(81) + "2 running");
+  assert.doesNotMatch(lines.join("\n"), /Subagents|Agents list/);
   assert.match(lines[2], /AGENT\s+ACTIVITY\s+ELAPSED/);
   assert.match(lines[3], /Alpha \(scout\)\s+reading\s+1m$/);
   assert.match(lines[4], /Longer agent \(scout\)\s+bash\s+2h 3m$/);

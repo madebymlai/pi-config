@@ -434,7 +434,7 @@ async function launchSubagent(
   // Use pre-created surface (parallel mode) or create a new one.
   // For new surfaces, pause briefly so the shell is ready before sending the command.
   const surfacePreCreated = !!options?.surface;
-  const surface = options?.surface ?? createSurface(params.name);
+  const surface = options?.surface ?? createSurface(params.name, params.agent);
   if (!surfacePreCreated) {
     await new Promise<void>((resolve) => setTimeout(resolve, getShellReadyDelayMs()));
   }
@@ -932,7 +932,7 @@ function createChildTransports(
       // transcript doesn't block the UI.
       const entryCountBefore = countSessionEntryLines(sessionPath);
 
-      const surface = createSurface(name);
+      const surface = createSurface(name, loadout.agent ?? undefined);
       await new Promise<void>((resolve) => setTimeout(resolve, getShellReadyDelayMs()));
 
       // Build pi resume command

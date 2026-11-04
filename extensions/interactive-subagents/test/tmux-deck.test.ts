@@ -30,11 +30,119 @@ after(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+it("shows the sole agent at one, the list from two, and collapses after 30 idle seconds", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const a = surfaces.createSurface("Alpha", "worker");
+    assert.deepEqual(panes(), [main, a], "the first agent is shown directly");
+    assert.ok(focused(main), "creating the first agent does not steal focus");
+    surfaces.showSurfaceList();
+    assert.deepEqual(panes(), [main, a], "browsing one agent never opens a redundant list");
+    assert.ok(focused(a));
+    surfaces.focusSurfaceParent();
+    const b = surfaces.createSurface("Beta", "scout");
+    const list = tmux("display-message", "-p", "-t", main, "#{@pi-deck-list}");
+    assert.deepEqual(panes(), [main, list], "the second agent introduces the list");
+    assert.ok(focused(main));
+    surfaces.showSurface(a);
+    const c = surfaces.createSurface("Gamma", "reviewer");
+    assert.deepEqual(panes(), [main, a], "additional agents preserve the selected view");
+    surfaces.closeSurface(c);
+    assert.deepEqual(panes(), [main, a], "three to two preserves a selected agent");
+    surfaces.showSurfaceList();
+    surfaces.closeSurface(b);
+    assert.deepEqual(panes(), [main, a], "two to one replaces the list with the survivor");
+    assert.ok(focused(a), "right-hand focus follows the replacement");
+    surfaces.closeSurface(a);
+    assert.deepEqual(panes(), [main, list], "the empty list holds the right slot during the grace period");
+    t.mock.timers.tick(29_000);
+    assert.deepEqual(panes(), [main, list], "Main does not expand before the grace period ends");
+    const next = surfaces.createSurface("Again", "worker");
+    assert.deepEqual(panes(), [main, next], "a new agent replaces the empty list directly");
+    t.mock.timers.tick(1_000);
+    assert.deepEqual(panes(), [main, next], "the previous collapse was cancelled");
+    surfaces.closeSurface(next);
+    t.mock.timers.tick(29_999);
+    assert.deepEqual(panes(), [main, list], "each idle period gets its own full delay");
+    t.mock.timers.tick(1);
+    assert.deepEqual(panes(), [main], "the last exit eventually removes the right pane");
+    assert.equal(width(), 160, "Main gets the full window width back");
+    surfaces.showSurfaceList();
+    assert.deepEqual(panes(), [main], "browsing zero agents does not reopen the list");
+    const later = surfaces.createSurface("Later", "worker");
+    assert.deepEqual(panes(), [main, later], "a later first agent is shown directly again");
+  } finally {
+    surfaces.disposeSurfaces();
+  }
+});
+
+it("preserves an explicitly opened agent when another agent starts", () => {
+  try {
+    const a = surfaces.createSurface("chosen", "worker");
+    surfaces.showSurface(a);
+    surfaces.focusSurfaceParent();
+    const b = surfaces.createSurface("second", "scout");
+    assert.deepEqual(panes(), [main, a], "an explicit selection survives a new arrival");
+    surfaces.showSurfaceList();
+    const list = panes().find(p => p !== main)!;
+    surfaces.closeSurface(b);
+    surfaces.createSurface("replacement", "scout");
+    assert.deepEqual(panes(), [main, list], "choosing the list clears the previous selection");
+  } finally {
+    surfaces.disposeSurfaces();
+  }
+});
+
+it("reconciles already-closed panes when the completion watcher cleans them up", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const a = surfaces.createSurface("survivor", "worker");
+    const b = surfaces.createSurface("external", "scout");
+    tmux("kill-pane", "-t", b);
+    surfaces.closeSurface(b);
+    assert.deepEqual(panes(), [main, a], "an external exit still reveals the sole survivor");
+    tmux("kill-pane", "-t", a);
+    surfaces.closeSurface(a);
+    assert.equal(panes().length, 2, "an external last exit gets the same grace period");
+    t.mock.timers.tick(20_000);
+    surfaces.closeSurface(a);
+    t.mock.timers.tick(10_000);
+    assert.deepEqual(panes(), [main], "duplicate cleanup must not restart the idle period");
+  } finally {
+    surfaces.disposeSurfaces();
+  }
+});
+
 it("keeps only main and list visible with arbitrarily many running children", () => {
   for (let i = 0; i < 4; i++) surfaces.createSurface(`child-${i}`);
   assert.equal(panes().length, 2);
   assert.ok(Math.abs(width() - 80) <= 1);
   assert.equal(tmux("display-message", "-p", "-t", main, "#{pane_active}"), "1");
+});
+
+it("labels panes by identity and highlights only the focused header through swaps", () => {
+  const list = panes().find(p => p !== main)!;
+  const child = surfaces.createSurface("Ada", "reviewer");
+  const label = (pane: string) => tmux("show-options", "-pqv", "-t", pane, "@pi-label");
+  const header = (pane: string) => tmux("display-message", "-p", "-t", pane, "#{E:pane-border-format}");
+  assert.equal(label(main), "Main");
+  assert.equal(label(list), "Agents list");
+  assert.equal(label(child), "Ada (reviewer)");
+  assert.equal(tmux("show-options", "-wv", "-t", main, "pane-border-status"), "top");
+  for (const option of ["pane-border-style", "pane-active-border-style"]) {
+    assert.equal(tmux("show-options", "-wv", "-t", main, option), "fg=colour238");
+  }
+  assert.equal(tmux("show-options", "-wv", "-t", main, "pane-border-indicators"), "off");
+  assert.equal(tmux("show-options", "-wv", "-t", main, "pane-border-lines"), "single");
+  assert.equal(header(main), "#[fg=colour232]#[bg=colour75]#[bold] Main #[default]");
+  assert.equal(header(list), "#[fg=colour244] Agents list #[default]");
+  surfaces.showSurface(child);
+  assert.equal(header(child), "#[fg=colour232]#[bg=colour75]#[bold] Ada (reviewer) #[default]");
+  assert.equal(header(main), "#[fg=colour244] Main #[default]");
+  surfaces.showSurfaceList();
+  assert.equal(label(child), "Ada (reviewer)");
+  assert.equal(label(list), "Agents list");
+  surfaces.focusSurfaceParent();
 });
 
 it("selects children across processes without replacing their processes or pane IDs", () => {
@@ -118,6 +226,42 @@ it("cleans up all owned panes and parking sessions idempotently", () => {
   assert.deepEqual(panes(), [main]);
   assert.equal(tmux("list-sessions", "-F", "#{session_name}"), "test");
   assert.equal(tmux("list-panes", "-a", "-F", "#{pane_id}"), main);
+});
+
+it("restores local header settings and inherited settings even when disposed by another process", () => {
+  const options = {
+    "pane-border-status": "bottom",
+    "pane-border-style": "fg=red",
+    "pane-active-border-style": "fg=green,bold",
+    "pane-border-indicators": "colour",
+    "pane-border-lines": "double",
+    "pane-border-format": "",
+  };
+  const other = tmux("new-window", "-d", "-t", "test:", "-P", "-F", "#{pane_id}", "sleep 600");
+  for (const local of [true, false]) {
+    for (const [option, value] of Object.entries(options)) {
+      tmux("set-option", "-gw", option, value);
+      if (local) tmux("set-option", "-w", "-t", main, option, value);
+      else tmux("set-option", "-wu", "-t", main, option);
+    }
+    tmux("set-option", "-w", "-t", main, "@pi-label", "Inherited main");
+    if (local) tmux("set-option", "-p", "-t", main, "@pi-label", " Original main ");
+    else tmux("set-option", "-pu", "-t", main, "@pi-label");
+    const child = surfaces.createSurface("restore", "scout");
+    for (const [option, value] of Object.entries(options)) {
+      assert.equal(tmux("show-options", "-wAv", "-t", other, option), value, "other windows are untouched");
+    }
+    // Changing the inherited value during use must not create a stale local override.
+    tmux("set-option", "-gw", "pane-border-status", "off");
+    crossProcess(child, "s.disposeSurfaces()");
+    for (const [option, value] of Object.entries(options)) {
+      assert.equal(tmux("show-options", "-wAv", "-t", main, option), !local && option === "pane-border-status" ? "off" : value);
+      if (!local) assert.equal(tmux("show-options", "-wq", "-t", main, option), "");
+    }
+    assert.equal(execFileSync("tmux", ["-S", socket, "show-options", "-pAv", "-t", main, "@pi-label"], { encoding: "utf8" }), local ? " Original main \n" : "Inherited main\n");
+    if (!local) assert.equal(tmux("show-options", "-pq", "-t", main, "@pi-label"), "");
+  }
+  tmux("kill-pane", "-t", other);
 });
 
 it("makes cleanup a no-op outside tmux", () => {

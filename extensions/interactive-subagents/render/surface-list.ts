@@ -150,10 +150,8 @@ export class SurfaceList implements Component {
 
   render(width: number): string[] {
     const count = `${this.data.rows.length} running`;
-    const title = bold("Subagents") + (width >= 24
-      ? " ".repeat(Math.max(1, width - 9 - count.length)) + dim(count)
-      : "");
-    const header = [title, "", dim("  " + columns("AGENT", "ACTIVITY", "ELAPSED", Math.max(0, width - 4), this.data.showStatus))]
+    const countLine = " ".repeat(Math.max(0, width - count.length)) + dim(count);
+    const header = [countLine, "", dim("  " + columns("AGENT", "ACTIVITY", "ELAPSED", Math.max(0, width - 4), this.data.showStatus))]
       .slice(0, this.headerHeight());
     const actions = this.error ? `Error: ${this.error}`
       : width >= 64

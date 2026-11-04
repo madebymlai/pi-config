@@ -81,6 +81,7 @@ export function shellEscape(s: string): string {
 let listCommand: string | undefined;
 const deckHooks = ["pane-exited", "after-kill-pane"];
 const hookIndex = 9271;
+const idleCollapses = new Map<string, ReturnType<typeof setTimeout>>();
 
 function tmux(...args: string[]): string {
   return execFileSync("tmux", args, { encoding: "utf8" }).trim();
@@ -114,6 +115,12 @@ export function configureSurfaceList(command: string): void {
   listCommand = command;
 }
 
+function localOption(scope: "p" | "w", target: string, option: string): string | null {
+  return tmux("show-options", `-${scope}q`, "-t", target, option)
+    ? execFileSync("tmux", ["show-options", `-${scope}qv`, "-t", target, option], { encoding: "utf8" }).replace(/\n$/, "")
+    : null;
+}
+
 function ensureDeck(): Deck {
   requireTmux();
   const existing = deckFor();
@@ -128,6 +135,25 @@ function ensureDeck(): Deck {
   tmux("new-window", "-d", "-t", `${parking}:`, "sleep 2147483647");
   markPane(parent, deck);
   markPane(list, deck);
+  const headers = {
+    "pane-border-status": "top",
+    "pane-border-style": "fg=colour238",
+    "pane-active-border-style": "fg=colour238",
+    "pane-border-indicators": "off",
+    "pane-border-lines": "single",
+    "pane-border-format": "#{?pane_active,#[fg=colour232]#[bg=colour75]#[bold] #{@pi-label} #[default],#[fg=colour244] #{@pi-label} #[default]}",
+  };
+  // Pane metadata survives calls from the list or a child process.
+  const window = tmux("display-message", "-p", "-t", parent, "#{window_id}");
+  const previous = {
+    window,
+    options: Object.fromEntries(Object.keys(headers).map(option => [option, localOption("w", window, option)])),
+    label: localOption("p", parent, "@pi-label"),
+  };
+  tmux("set-option", "-p", "-t", parent, "@pi-deck-headers", JSON.stringify(previous));
+  tmux("set-option", "-p", "-t", parent, "@pi-label", "Main");
+  tmux("set-option", "-p", "-t", list, "@pi-label", "Agents list");
+  for (const [option, value] of Object.entries(headers)) tmux("set-option", "-w", "-t", window, option, value);
   tmux("join-pane", "-d", "-h", "-s", list, "-t", parent);
   tmux("select-layout", "-t", parent, "even-horizontal");
   // Scoped, additive hooks also recover a selected pane killed outside this API.
@@ -137,18 +163,66 @@ function ensureDeck(): Deck {
   return deck;
 }
 
-/** Create a running, hidden child without changing the visible pane or focus. */
-export function createSurface(name: string): string {
+/** Show the first child directly, introduce the list at two, and keep main focused. */
+export function createSurface(name: string, role?: string): string {
   const deck = ensureDeck();
   const pane = tmux("new-window", "-d", "-t", `${deck.parking}:`, "-n", name, "-P", "-F", "#{pane_id}");
   markPane(pane, deck);
+  tmux("set-option", "-p", "-t", pane, "@pi-label", role ? `${name} (${role})` : name);
   const size = tmux("display-message", "-p", "-t", deck.parent, "#{pane_width} #{pane_height}").split(" ");
   tmux("resize-window", "-t", pane, "-x", size[0], "-y", size[1]);
+  reconcileDeck(deck, "create");
   return pane;
 }
 
+function ownedPanes(deck: Deck, all = false): string[] {
+  return tmux("list-panes", ...(all ? ["-a"] : ["-t", deck.parent]), "-F", "#{pane_id} #{@pi-deck-parent}")
+    .split("\n").map(row => row.split(" "))
+    .filter(([pane, parent]) => parent === deck.parent && pane !== deck.parent)
+    .map(([pane]) => pane);
+}
+
+function cancelIdleCollapse(deck: Deck): void {
+  clearTimeout(idleCollapses.get(deck.parent));
+  idleCollapses.delete(deck.parent);
+}
+
+function scheduleIdleCollapse(deck: Deck): void {
+  if (idleCollapses.has(deck.parent)) return;
+  const timer = setTimeout(() => {
+    idleCollapses.delete(deck.parent);
+    // A reload or cross-process cleanup may have replaced this deck already.
+    if (deckFor(deck.parent)?.list !== deck.list) return;
+    if (ownedPanes(deck, true).some(pane => pane !== deck.list)) return;
+    const visible = ownedPanes(deck)[0];
+    if (visible) tmux("break-pane", "-d", "-s", visible, "-t", `${deck.parking}:`);
+  }, 30_000);
+  timer.unref();
+  idleCollapses.set(deck.parent, timer);
+}
+
+/** All entry points share the same zero / one / many policy. */
+function reconcileDeck(deck: Deck, reason: "create" | "close" | "browse", focus = reason === "browse"): void {
+  const children = ownedPanes(deck, true).filter(pane => pane !== deck.list);
+  const visible = ownedPanes(deck)[0];
+  if (children.length === 0) {
+    if (reason === "close" && visible) scheduleIdleCollapse(deck);
+    if (focus) tmux("select-pane", "-t", deck.parent);
+    return;
+  }
+  cancelIdleCollapse(deck);
+  if (children.length === 1) {
+    reveal(deck, children[0], focus);
+  } else if (!visible || reason === "browse" ||
+    (reason === "create" && children.length === 2 && paneOption(deck.parent, "selected") !== visible)) {
+    reveal(deck, deck.list, focus);
+  } else if (focus) {
+    tmux("select-pane", "-t", visible);
+  }
+}
+
 function reveal(deck: Deck, pane: string, focus = true): void {
-  const visible = tmux("list-panes", "-t", deck.parent, "-F", "#{pane_id}").split("\n").find(id => id !== deck.parent);
+  const visible = ownedPanes(deck)[0];
   if (visible !== pane) {
     if (visible) tmux("swap-pane", "-d", "-s", pane, "-t", visible);
     else tmux("join-pane", "-d", "-h", "-s", pane, "-t", deck.parent);
@@ -164,13 +238,17 @@ export function showSurface(surface: string): void {
   if (!deck || surface === deck.parent || paneOption(surface, "parent") !== deck.parent) {
     throw new Error("Surface does not belong to this pane deck");
   }
+  tmux("set-option", "-p", "-t", deck.parent, "@pi-deck-selected", surface);
   reveal(deck, surface);
 }
 
 export function showSurfaceList(): void {
   requireTmux();
   const deck = deckFor();
-  if (deck) reveal(deck, deck.list);
+  if (deck) {
+    tmux("set-option", "-pu", "-t", deck.parent, "@pi-deck-selected");
+    reconcileDeck(deck, "browse");
+  }
 }
 
 export function returnToSurfaceList(): void {
@@ -189,6 +267,7 @@ export function disposeSurfaces(): void {
   if (!isTmuxAvailable()) return;
   const deck = deckFor();
   if (!deck) return;
+  cancelIdleCollapse(deck);
   for (const hook of deckHooks) tmux("set-hook", "-wu", "-t", deck.parent, `${hook}[${hookIndex}]`);
   const owned = tmux("list-panes", "-a", "-F", "#{pane_id} #{@pi-deck-parent}").split("\n");
   for (const row of owned) {
@@ -196,7 +275,17 @@ export function disposeSurfaces(): void {
     if (parent === deck.parent && pane !== deck.parent) tmux("kill-pane", "-t", pane);
   }
   tmux("kill-session", "-t", deck.parking);
-  for (const key of ["parent", "list", "parking"]) tmux("set-option", "-pu", "-t", deck.parent, `@pi-deck-${key}`);
+  const saved = paneOption(deck.parent, "headers");
+  if (saved) {
+    const previous: { window: string; options: Record<string, string | null>; label: string | null } = JSON.parse(saved);
+    for (const [option, value] of Object.entries(previous.options)) {
+      if (value === null) tmux("set-option", "-wu", "-t", previous.window, option);
+      else tmux("set-option", "-w", "-t", previous.window, option, value);
+    }
+    if (previous.label === null) tmux("set-option", "-pu", "-t", deck.parent, "@pi-label");
+    else tmux("set-option", "-p", "-t", deck.parent, "@pi-label", previous.label);
+  }
+  for (const key of ["parent", "list", "parking", "headers", "selected"]) tmux("set-option", "-pu", "-t", deck.parent, `@pi-deck-${key}`);
 }
 
 // ── Surface primitives ──
@@ -318,17 +407,13 @@ export async function readScreenAsync(surface: string, lines = 50): Promise<stri
  */
 export function closeSurface(surface: string): void {
   requireTmux();
-  if (surfaceExists(surface)) {
-    const deck = deckFor(surface);
-    if (deck && surface !== deck.list && surface !== deck.parent) {
-      const visible = tmux("list-panes", "-t", deck.parent, "-F", "#{pane_id}").split("\n");
-      if (visible.includes(surface)) {
-        const focused = tmux("display-message", "-p", "-t", surface, "#{pane_active}") === "1";
-        reveal(deck, deck.list, focused);
-      }
-    }
-    execFileSync("tmux", ["kill-pane", "-t", surface], { encoding: "utf8" });
-  }
+  const exists = surfaceExists(surface);
+  // The watcher also calls this after a process exits or a pane is killed externally.
+  const deck = exists ? deckFor(surface) : deckFor();
+  const focused = exists && tmux("display-message", "-p", "-t", surface, "#{pane_active}") === "1"
+    && deck !== undefined && ownedPanes(deck).includes(surface);
+  if (exists) tmux("kill-pane", "-t", surface);
+  if (deck && surface !== deck.list && surface !== deck.parent) reconcileDeck(deck, "close", focused);
 }
 
 /**
