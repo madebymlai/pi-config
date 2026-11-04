@@ -14,10 +14,11 @@
  * replies with send_message — which lands as the subagent's next turn.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Box, Text } from "@earendil-works/pi-tui";
+import { Box, Text, matchesKey } from "@earendil-works/pi-tui";
 import { renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createSubagentActivityRecorder } from "./activity-recorder.ts";
 import { PARENT, registerSendMessage } from "../protocol/messaging.ts";
+import { returnToSurfaceList } from "../spawn/tmux.ts";
 
 export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
   return agentStarted;
@@ -142,6 +143,7 @@ export default function (pi: ExtensionAPI) {
   let toolNames: string[] = [];
   let denied: string[] = [];
   let expanded = false;
+  let unbindNavigation: (() => void) | undefined;
 
   // Read subagent identity from env vars (set by parent orchestrator)
   const subagentName = process.env.PI_SUBAGENT_NAME ?? "";
@@ -192,7 +194,7 @@ export default function (pi: ExtensionAPI) {
             denied.length > 0
               ? theme.fg("dim", " · ") + theme.fg("error", `${denied.length} denied`)
               : "";
-          const hint = theme.fg("muted", "  (Ctrl+Alt+O to expand)");
+          const hint = theme.fg("muted", "  Ctrl+Z agents · Ctrl+Alt+O tools");
 
           const content = new Text(`${agentTag}${countInfo}${deniedInfo}${hint}`, 0, 0);
           box.addChild(content);
@@ -221,6 +223,20 @@ export default function (pi: ExtensionAPI) {
 
   // Show widget + status bar on session start
   pi.on("session_start", (_event, ctx) => {
+    unbindNavigation?.();
+    if (ctx.mode === "tui") {
+      // Raw input runs before the editor/dialog and Pi's native suspend action.
+      // A failed navigation must not suspend a worker that is still running.
+      unbindNavigation = ctx.ui.onTerminalInput((data) => {
+        if (!matchesKey(data, "ctrl+z")) return;
+        try {
+          returnToSurfaceList();
+        } catch (error) {
+          ctx.ui.notify(`Cannot return to subagents: ${String(error)}`, "warning");
+        }
+        return { consume: true };
+      });
+    }
     recorder.sessionStart();
     const tools = pi.getAllTools();
     toolNames = tools.map((t) => t.name).sort();
@@ -345,6 +361,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", (event) => {
+    unbindNavigation?.();
+    unbindNavigation = undefined;
     recorder.sessionShutdown((event as any).reason);
   });
 

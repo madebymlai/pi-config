@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as subagentsModule from "../index.ts";
 import { createChildren, type RunningSubagent } from "../spawn/children.ts";
@@ -15,6 +15,14 @@ import { createMockExtensionApi, createMockContext } from "./support/mock-extens
  * session_start there is no context and every paint path returns before it can
  * be asserted on.
  */
+
+// These unit lifecycle tests must never operate on the invoking user's deck.
+const savedTmux = process.env.TMUX;
+before(() => { delete process.env.TMUX; });
+after(() => {
+  if (savedTmux === undefined) delete process.env.TMUX;
+  else process.env.TMUX = savedTmux;
+});
 
 /** Liveness is never touched by the paths under test; the widget renders lazily. */
 const STUB_LIVENESS = {
@@ -40,6 +48,35 @@ function entry(id: string, name = id): RunningSubagent {
 const forever = () => new Promise<void>(() => {});
 
 describe("extension wiring", () => {
+  it("keeps the main widget compact and points to the right-hand agent list", async () => {
+    const { api, emit } = createMockExtensionApi();
+    const ui = createMockContext();
+    const children = createChildren();
+    subagentsModule.default(api, { children });
+    await emit("session_start", {}, ui.ctx);
+    try {
+      await children.launch({ base: "scout", start: async (n) => entry("1", n), watch: forever });
+      await children.launch({ base: "worker", start: async (n) => entry("2", n), watch: forever });
+      const factory = ui.currentWidget() as Function;
+      const lines = factory({}, ui.ctx.ui.theme).render(80);
+      assert.equal(lines.length, 1, "the full agent list belongs in the right pane, not above the main input");
+      assert.match(lines[0], /2 subagents/);
+      assert.match(lines[0], /\/subagent-view/);
+    } finally {
+      children.shutdown();
+    }
+  });
+
+  it("offers a keyboard command and explains when there are no agents to browse", async () => {
+    const { api, registeredCommands } = createMockExtensionApi();
+    const ui = createMockContext();
+    subagentsModule.default(api, { children: createChildren() });
+    const command = registeredCommands.find((c) => c.name === "subagent-view");
+    assert.ok(command, "the right-hand list needs a keyboard entry point from the main session");
+    await command.handler("", ui.ctx);
+    assert.match(ui.notifications.at(-1)?.text ?? "", /no.*subagents/i);
+  });
+
   it("paints a widget once a subagent is live", async () => {
     const { api, emit } = createMockExtensionApi();
     const ui = createMockContext();

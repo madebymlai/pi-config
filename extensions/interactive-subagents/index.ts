@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import {
   formatAgentLine,
   NO_AGENTS_MESSAGE,
@@ -22,14 +22,17 @@ import {
 } from "./render/subagent-message.ts";
 import { createChildren, type Children, type RunningSubagent } from "./spawn/children.ts";
 import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import {
   readFileSync,
   writeFileSync,
   existsSync,
   mkdirSync,
   unlinkSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
 } from "node:fs";
-import { renderSubagentWidget } from "./render/widget.ts";
 import { describeRefusal, refuseSpawn } from "./spawn/guard.ts";
 import {
   describeResult,
@@ -53,6 +56,9 @@ import {
   sendLongCommand,
   pollForExit,
   closeSurface,
+  configureSurfaceList,
+  showSurfaceList,
+  disposeSurfaces,
   shellEscape,
 } from "./spawn/tmux.ts";
 
@@ -239,6 +245,24 @@ let children = createChildren();
 let latestCtx: ExtensionContext | null = null;
 /** Latest ExtensionAPI, used to deliver subagent messages from the watcher. */
 let latestPi: ExtensionAPI | null = null;
+/** Snapshot feed for the standalone list process; never contains transcript data. */
+let surfaceListDir: string | undefined;
+
+function publishSurfaceList(live: readonly RunningSubagent[]) {
+  if (!surfaceListDir) return;
+  const now = Date.now();
+  const rows = live.map((running) => ({
+    surface: running.surface,
+    name: running.name,
+    agent: running.agent,
+    elapsedMs: now - running.startTime,
+    snapshot: running.liveness.snapshot(now),
+  }));
+  const file = join(surfaceListDir, "list.json");
+  // The list process must see a complete snapshot, even during parallel spawns.
+  writeFileSync(`${file}.tmp`, JSON.stringify({ rows, showStatus: statusConfig.enabled }));
+  renameSync(`${file}.tmp`, file);
+}
 
 /**
  * Repaint the widget for the given set. `children` decides when this runs; the
@@ -246,6 +270,7 @@ let latestPi: ExtensionAPI | null = null;
  * subagent is doing without changing who is live.
  */
 function paintWidget(live: readonly RunningSubagent[]) {
+  publishSurfaceList(live);
   if (!latestCtx?.hasUI) return;
 
   if (live.length === 0) {
@@ -255,21 +280,16 @@ function paintWidget(live: readonly RunningSubagent[]) {
 
   latestCtx.ui.setWidget(
     "subagent-status",
-    (_tui: any, _theme: any) => {
-      return {
-        invalidate() {},
-        render(width: number) {
-          const now = Date.now();
-          const rows = live.map((running) => ({
-            name: running.name,
-            agent: running.agent,
-            elapsedMs: now - running.startTime,
-            snapshot: running.liveness.snapshot(now),
-          }));
-          return renderSubagentWidget(rows, width, { showStatus: statusConfig.enabled });
-        },
-      };
-    },
+    (_tui, theme) => ({
+      invalidate() {},
+      render(width: number) {
+        return [truncateToWidth(
+          theme.fg("accent", `${live.length} subagent${live.length === 1 ? "" : "s"}`) +
+            theme.fg("muted", " · /subagent-view to browse"),
+          width,
+        )];
+      },
+    }),
     { placement: "aboveEditor" },
   );
 }
@@ -1023,11 +1043,23 @@ export default function subagentsExtension(
   // Capture the UI context for widget updates
   pi.on("session_start", (_event, ctx) => {
     latestCtx = ctx;
+    if (ctx.mode === "tui" && isMuxAvailable()) {
+      surfaceListDir = mkdtempSync(join(tmpdir(), "pi-subagent-list-"));
+      publishSurfaceList([]);
+      configureSurfaceList(
+        `${shellEscape(process.execPath)} ${shellEscape(paths.surfaceListEntry)} ` +
+          shellEscape(join(surfaceListDir, "list.json")),
+      );
+    }
   });
 
   // Clean up on session shutdown
   pi.on("session_shutdown", (_event, _ctx) => {
     children.shutdown();
+    disposeSurfaces();
+    if (surfaceListDir) rmSync(surfaceListDir, { recursive: true, force: true });
+    surfaceListDir = undefined;
+    latestCtx = null;
   });
 
   // The spawning tools are always registered here. Whether a child process can
@@ -1169,6 +1201,21 @@ export default function subagentsExtension(
     });
 
   registerSendMessage(pi, "children", createChildTransports(pi, { live: () => children.live() }));
+
+  pi.registerCommand("subagent-view", {
+    description: "Browse running subagents in the right pane",
+    handler: async (_args, ctx) => {
+      if (children.live().length === 0) {
+        ctx.ui.notify("No running subagents to browse.", "info");
+        return;
+      }
+      try {
+        showSurfaceList();
+      } catch (error) {
+        ctx.ui.notify(`Cannot open subagents: ${String(error)}`, "warning");
+      }
+    },
+  });
 
   // /subagent command — spawn a subagent by name
   pi.registerCommand("subagent", {

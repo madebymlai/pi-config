@@ -43,6 +43,9 @@ export const paths = {
   /** The extension injected with `-e` into every subagent session. */
   childEntry: join(PACKAGE_ROOT, "child", "index.ts"),
 
+  /** Standalone right-pane agent picker (no model/session of its own). */
+  surfaceListEntry: join(PACKAGE_ROOT, "scripts", "surface-list.ts"),
+
   /** Agent role definitions bundled with this package (the first discovery tier). */
   bundledAgents: join(PACKAGE_ROOT, "agents"),
 

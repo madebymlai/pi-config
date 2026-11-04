@@ -6,9 +6,9 @@
  * it, and poll for exit. Keeping the tmux calls isolated here means index.ts
  * stays testable without a multiplexer running.
  *
- * Panes are identified by tmux pane ids (e.g. `%12`). Splits always target
- * the parent pi's pane (`$TMUX_PANE`) so they follow the agent rather than
- * the user's focus.
+ * Panes keep their tmux ids (e.g. `%12`) while moving between the parent's
+ * right-hand slot and a detached parking session. Pane-local metadata lets
+ * the standalone list and children navigate without parent-process state.
  */
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -78,54 +78,128 @@ export function shellEscape(s: string): string {
 
 // ── Pane layout ──
 
-/**
- * tmux layout applied to the subagent window to keep panes evenly sized.
- * Switchable: "even-horizontal" (equal columns, matches Ctrl+b Alt+1),
- * "main-vertical" (big main pane + tiled column), "tiled" (grid).
- */
-const SUBAGENT_TMUX_LAYOUT = "even-horizontal";
+let listCommand: string | undefined;
+const deckHooks = ["pane-exited", "after-kill-pane"];
+const hookIndex = 9271;
 
-let rebalanceTimer: ReturnType<typeof setTimeout> | null = null;
+function tmux(...args: string[]): string {
+  return execFileSync("tmux", args, { encoding: "utf8" }).trim();
+}
 
-/**
- * Re-balance subagent panes so repeated splits don't leave them lopsided.
- * tmux halves the target pane on every split and dumps freed space onto a
- * neighbor on close, so without this panes drift to wildly uneven widths.
- * Applies SUBAGENT_TMUX_LAYOUT to the parent pi window. Debounced so a burst
- * of parallel spawns or staggered exits collapses into a single layout call,
- * and non-fatal: a cosmetic resize must never break spawning or watching.
- */
-function rebalanceSurfaces(hintPane?: string): void {
-  // Prefer the parent pi pane (stable; survives a closing subagent pane).
-  const target = process.env.TMUX_PANE ?? hintPane;
-  if (!target) return;
-  if (rebalanceTimer) clearTimeout(rebalanceTimer);
-  rebalanceTimer = setTimeout(() => {
-    rebalanceTimer = null;
-    try {
-      // -t <pane> resolves to that pane's window; does not change focus.
-      execFileSync("tmux", ["select-layout", "-t", target, SUBAGENT_TMUX_LAYOUT], {
-        encoding: "utf8",
-      });
-    } catch {
-      // Pane/window may be gone; balancing is best-effort.
-    }
-  }, 120);
+interface Deck {
+  parent: string;
+  list: string;
+  parking: string;
+}
+
+function paneOption(pane: string, key: string): string {
+  return tmux("display-message", "-p", "-t", pane, `#{@pi-deck-${key}}`);
+}
+
+function deckFor(pane = process.env.TMUX_PANE): Deck | undefined {
+  if (!pane) return;
+  const parent = paneOption(pane, "parent");
+  if (!parent) return;
+  return { parent, list: paneOption(pane, "list"), parking: paneOption(pane, "parking") };
+}
+
+function markPane(pane: string, deck: Deck): void {
+  for (const [key, value] of Object.entries(deck)) {
+    tmux("set-option", "-p", "-t", pane, `@pi-deck-${key}`, value);
+  }
+}
+
+/** Configure the standalone list command before the first child is created. */
+export function configureSurfaceList(command: string): void {
+  listCommand = command;
+}
+
+function ensureDeck(): Deck {
+  requireTmux();
+  const existing = deckFor();
+  if (existing) return existing;
+  const parent = process.env.TMUX_PANE!;
+  const width = tmux("display-message", "-p", "-t", parent, "#{pane_width}");
+  const height = tmux("display-message", "-p", "-t", parent, "#{pane_height}");
+  const parking = `pi-deck-${process.pid}-${parent.slice(1)}`;
+  const list = tmux("new-session", "-d", "-s", parking, "-x", String(Math.floor(Number(width) / 2)), "-y", height, "-P", "-F", "#{pane_id}");
+  const deck = { parent, list, parking };
+  // Keep the detached session alive when its list pane moves into the main window.
+  tmux("new-window", "-d", "-t", `${parking}:`, "sleep 2147483647");
+  markPane(parent, deck);
+  markPane(list, deck);
+  tmux("join-pane", "-d", "-h", "-s", list, "-t", parent);
+  tmux("select-layout", "-t", parent, "even-horizontal");
+  // Scoped, additive hooks also recover a selected pane killed outside this API.
+  const restore = `if-shell -F '#{==:#{window_panes},1}' 'join-pane -d -h -s ${list} -t ${parent} ; select-layout -t ${parent} even-horizontal'`;
+  for (const hook of deckHooks) tmux("set-hook", "-w", "-t", parent, `${hook}[${hookIndex}]`, restore);
+  if (listCommand) tmux("respawn-pane", "-k", "-t", list, listCommand);
+  return deck;
+}
+
+/** Create a running, hidden child without changing the visible pane or focus. */
+export function createSurface(name: string): string {
+  const deck = ensureDeck();
+  const pane = tmux("new-window", "-d", "-t", `${deck.parking}:`, "-n", name, "-P", "-F", "#{pane_id}");
+  markPane(pane, deck);
+  const size = tmux("display-message", "-p", "-t", deck.parent, "#{pane_width} #{pane_height}").split(" ");
+  tmux("resize-window", "-t", pane, "-x", size[0], "-y", size[1]);
+  return pane;
+}
+
+function reveal(deck: Deck, pane: string, focus = true): void {
+  const visible = tmux("list-panes", "-t", deck.parent, "-F", "#{pane_id}").split("\n").find(id => id !== deck.parent);
+  if (visible !== pane) {
+    if (visible) tmux("swap-pane", "-d", "-s", pane, "-t", visible);
+    else tmux("join-pane", "-d", "-h", "-s", pane, "-t", deck.parent);
+  }
+  tmux("select-layout", "-t", deck.parent, "even-horizontal");
+  if (focus) tmux("select-pane", "-t", pane);
+}
+
+/** Select an owned child; callable in the parent, list, or another child. */
+export function showSurface(surface: string): void {
+  requireTmux();
+  const deck = deckFor();
+  if (!deck || surface === deck.parent || paneOption(surface, "parent") !== deck.parent) {
+    throw new Error("Surface does not belong to this pane deck");
+  }
+  reveal(deck, surface);
+}
+
+export function showSurfaceList(): void {
+  requireTmux();
+  const deck = deckFor();
+  if (deck) reveal(deck, deck.list);
+}
+
+export function returnToSurfaceList(): void {
+  showSurfaceList();
+}
+
+/** Focus main without changing what is displayed on the right. */
+export function focusSurfaceParent(): void {
+  requireTmux();
+  const deck = deckFor();
+  if (deck) tmux("select-pane", "-t", deck.parent);
+}
+
+/** Remove only this deck's panes, metadata, and window hooks. */
+export function disposeSurfaces(): void {
+  if (!isTmuxAvailable()) return;
+  const deck = deckFor();
+  if (!deck) return;
+  for (const hook of deckHooks) tmux("set-hook", "-wu", "-t", deck.parent, `${hook}[${hookIndex}]`);
+  const owned = tmux("list-panes", "-a", "-F", "#{pane_id} #{@pi-deck-parent}").split("\n");
+  for (const row of owned) {
+    const [pane, parent] = row.split(" ");
+    if (parent === deck.parent && pane !== deck.parent) tmux("kill-pane", "-t", pane);
+  }
+  tmux("kill-session", "-t", deck.parking);
+  for (const key of ["parent", "list", "parking"]) tmux("set-option", "-pu", "-t", deck.parent, `@pi-deck-${key}`);
 }
 
 // ── Surface primitives ──
-
-/**
- * Create a new pane for a subagent: a right split off the parent pi's pane,
- * so new panes follow the agent rather than the user's focus.
- * See https://github.com/HazAT/pi-interactive-subagents/issues/12
- *
- * Returns the new pane id (e.g. `%12`).
- */
-export function createSurface(name: string): string {
-  void name; // tmux panes are not named; the pi process inside shows its own title.
-  return createSurfaceSplit(name, "right", process.env.TMUX_PANE);
-}
 
 /**
  * Create a new split in the given direction from an optional source pane.
@@ -158,7 +232,6 @@ export function createSurfaceSplit(
     throw new Error(`Unexpected tmux split-window output: ${pane}`);
   }
 
-  rebalanceSurfaces(pane);
   return pane;
 }
 
@@ -246,9 +319,16 @@ export async function readScreenAsync(surface: string, lines = 50): Promise<stri
 export function closeSurface(surface: string): void {
   requireTmux();
   if (surfaceExists(surface)) {
+    const deck = deckFor(surface);
+    if (deck && surface !== deck.list && surface !== deck.parent) {
+      const visible = tmux("list-panes", "-t", deck.parent, "-F", "#{pane_id}").split("\n");
+      if (visible.includes(surface)) {
+        const focused = tmux("display-message", "-p", "-t", surface, "#{pane_active}") === "1";
+        reveal(deck, deck.list, focused);
+      }
+    }
     execFileSync("tmux", ["kill-pane", "-t", surface], { encoding: "utf8" });
   }
-  rebalanceSurfaces();
 }
 
 /**

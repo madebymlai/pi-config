@@ -6,18 +6,25 @@ Async subagents for [pi](https://github.com/badlogic/pi-mono), running in tmux p
 
 ## How it works
 
-`subagent()` returns immediately. The sub-agent runs in its own tmux pane — a right split off the parent pi pane, so pane creation never steals keyboard focus. A live widget above the input tracks every running sub-agent, and when one finishes, its result is steered into the main session as a notification that triggers a new turn.
+`subagent()` returns immediately. On the first spawn, the window becomes two halves: the main session on the left and a flat agent list on the right. Additional agents never shrink the main pane or steal focus. Each agent runs in its own pane, parked in a detached tmux session until you open it.
 
+```text
+Main session                    │ Agents
+                                │ > scout (scout) · 23s · active
+                                │   fix-login (worker) · 45s · waiting
+                                │
+2 subagents · /subagent-view     │ Enter/click open · Ctrl+Z returns from agent
+>                               │ ↑↓ move · PgUp/PgDn · Esc/Ctrl+Z main
 ```
-╭─ Subagents ──────────────────────────── 2 running ─╮
-│ 00:23  scout      active · bash 7m                 │
-│ 00:45  scout-2    waiting 2m                       │
-╰────────────────────────────────────────────────────╯
-```
 
-Spawn several in parallel — they run concurrently and steer results back independently as each finishes.
+- **Click a row or press Enter** to replace the list with that agent's live terminal in the right half. Use **↑/↓**, **Home/End**, or **PgUp/PgDn** to navigate the list.
+- **Ctrl+Z inside an agent** returns to the list, even when a dialog has focus. It does **not** suspend, stop, or restart the agent.
+- **Esc or Ctrl+Z in the list** focuses the main session without changing the right pane.
+- **`/subagent-view` in the main session** opens and focuses the list.
 
-Panes are kept evenly sized: the extension re-applies an `even-horizontal` layout after every spawn and exit (debounced). The layout is a single constant, `SUBAGENT_TMUX_LAYOUT` in `spawn/tmux.ts` — change it to any named tmux layout (`main-vertical`, `tiled`, …).
+The list uses its own fullscreen TUI, so clicks do not depend on the main Pi session's display mode. If tmux intercepts clicks rather than forwarding them, enable mouse support with `tmux set -g mouse on`.
+
+Hidden agents keep running concurrently, and results are steered back independently as each finishes. Closing the visible agent returns the right pane to the list; closing a hidden agent leaves your current view alone. Session shutdown or reload cleans up the list and all owned panes. The main widget is a one-line count rather than a second copy of the list.
 
 If your shell startup is slow and launch commands get dropped before the prompt is ready, raise the delay:
 
@@ -171,7 +178,7 @@ Set a per-agent default with `cwd:` in frontmatter.
 
 ## Status widget & configuration
 
-The widget tracks each sub-agent from a runtime activity snapshot written by the child: `starting`, `active` (turn/provider/tool work), `waiting` (open for input or another stage), `stalled` (no valid snapshot for too long), or `running` (fallback). Sub-agent sessions also show their own tools widget — toggle it with `Ctrl+Alt+O`. Completion messages expand with `Ctrl+O`.
+The right-hand list tracks each sub-agent from a runtime activity snapshot written by the child: `starting`, `active` (turn/provider/tool work), `waiting` (open for input or another stage), `stalled` (no valid snapshot for too long), or `running` (fallback). Sub-agent sessions also show their own tools widget — toggle it with `Ctrl+Alt+O`. Completion messages expand with `Ctrl+O`. Disabling status display hides activity labels in the list but keeps names and elapsed times.
 
 Status display is configured via `config.json` in the extension directory (copy `config.json.example`; it's gitignored):
 
@@ -183,7 +190,7 @@ Status display is configured via `config.json` in the extension directory (copy 
 
 ## Requirements
 
-- [pi](https://github.com/badlogic/pi-mono)
+- [pi](https://github.com/earendil-works/pi) 1.4.0 or later (this repo uses 1.5.0)
 - [tmux](https://github.com/tmux/tmux)
 
 ```bash
