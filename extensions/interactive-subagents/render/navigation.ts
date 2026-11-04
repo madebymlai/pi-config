@@ -2,7 +2,7 @@ import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendi
 import { matchesKey } from "@earendil-works/pi-tui";
 import { showSurfaceList } from "../spawn/tmux.ts";
 
-export const AGENT_LIST_HINT = "← empty prompt · Ctrl+Alt+A agents";
+export const AGENT_LIST_HINT = "← empty prompt / Ctrl+Alt+A  Agents";
 
 /** Shared navigation for the main session and children, without changing Pi's suspend key. */
 export function registerSurfaceNavigation(pi: ExtensionAPI, canBrowse: () => boolean = () => true): void {

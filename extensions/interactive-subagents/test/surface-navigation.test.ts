@@ -57,13 +57,14 @@ it("click opens an agent; empty left and Ctrl+Alt+A return without losing a draf
         watch: () => new Promise<void>(() => {}),
       });
     }
-    await waitUntil(() => screen(list).includes("Worker") && screen(b).includes("Ctrl+Alt+A agents"), () => `List:\n${screen(list)}\nChild:\n${screen(b)}`);
+    await waitUntil(() => screen(list).includes("Worker") && screen(b).includes("Ctrl+Alt+A"), () => `List:\n${screen(list)}\nChild:\n${screen(b)}`);
     assert.deepEqual(visible(), [main, list]);
     assert.equal(tmux("display-message", "-p", "-t", main, "#{pane_active}"), "1");
 
-    // Header is row 1, Scout row 2, Worker row 3. Exercise the real TUI's
-    // normalized mouse dispatch, not just the component's handler.
-    tmux("send-keys", "-t", list, "-l", "\x1b[<0;3;3M\x1b[<0;3;3m");
+    // Click the rendered Worker row through the real TUI's mouse dispatch.
+    const workerRow = screen(list).split("\n").findIndex((line) => line.includes("Worker")) + 1;
+    assert.ok(workerRow > 0);
+    tmux("send-keys", "-t", list, "-l", `\x1b[<0;3;${workerRow}M\x1b[<0;3;${workerRow}m`);
     await waitUntil(() => visible().includes(b), () => screen(list));
     const pid = tmux("display-message", "-p", "-t", b, "#{pane_pid}");
     tmux("send-keys", "-t", b, "-l", "draft");

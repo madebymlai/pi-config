@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
   formatAgentLine,
   NO_AGENTS_MESSAGE,
@@ -283,11 +283,12 @@ function paintWidget(live: readonly RunningSubagent[]) {
     (_tui, theme) => ({
       invalidate() {},
       render(width: number) {
-        return [truncateToWidth(
-          theme.fg("accent", `${live.length} subagent${live.length === 1 ? "" : "s"}`) +
-            theme.fg("muted", ` · ${AGENT_LIST_HINT}`),
-          width,
-        )];
+        const label = `${live.length} subagent${live.length === 1 ? "" : "s"}`;
+        const available = Math.max(0, width - visibleWidth(label) - 3);
+        const hint = truncateToWidth(available >= visibleWidth(AGENT_LIST_HINT)
+          ? AGENT_LIST_HINT : "Ctrl+Alt+A  Agents", available, "");
+        const gap = " ".repeat(Math.max(1, width - visibleWidth(label) - visibleWidth(hint)));
+        return [truncateToWidth(theme.fg("accent", label) + gap + theme.fg("muted", hint), width)];
       },
     }),
     { placement: "aboveEditor" },

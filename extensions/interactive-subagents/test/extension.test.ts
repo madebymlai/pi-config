@@ -64,6 +64,7 @@ describe("extension wiring", () => {
       assert.match(lines[0], /← empty prompt/);
       assert.match(lines[0], /Ctrl\+Alt\+A/);
       assert.doesNotMatch(lines[0], /subagent-view/);
+      assert.doesNotMatch(lines[0], /[·•]/, "navigation uses spacing, not dot separators");
     } finally {
       children.shutdown();
     }

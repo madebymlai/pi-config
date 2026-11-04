@@ -9,12 +9,15 @@ Async subagents for [pi](https://github.com/badlogic/pi-mono), running in tmux p
 `subagent()` returns immediately. On the first spawn, the window becomes two halves: the main session on the left and a flat agent list on the right. Additional agents never shrink the main pane or steal focus. Each agent runs in its own pane, parked in a detached tmux session until you open it.
 
 ```text
-Main session                    │ Agents
-                                │ > scout (scout) · 23s · active
-                                │   fix-login (worker) · 45s · waiting
+Main session                    │ Subagents                          2 running
                                 │
-2 subagents · ← / Ctrl+Alt+A     │ Enter/click open · ← empty / Ctrl+Alt+A list
->                               │ ↑↓ move · PgUp/PgDn · Esc/← main
+                                │   AGENT                 ACTIVITY     ELAPSED
+                                │ → scout (scout)         reading          23s
+                                │   fix-login (worker)    waiting          45s
+                                │
+                                │ ────────────────────────────────────────────
+2 subagents        Ctrl+Alt+A    │ Enter Open   ←/Esc Main
+>                               │ Ctrl+Alt+A  Agent list
 ```
 
 - **Click a row or press Enter** to replace the list with that agent's live terminal in the right half. Use **↑/↓**, **Home/End**, or **PgUp/PgDn** to navigate the list.
@@ -22,6 +25,8 @@ Main session                    │ Agents
 - **Ctrl+Alt+A from either pane** opens the list even with a draft or a focused dialog. The shortcut is listed in Pi's `/hotkeys`; switching views preserves the draft and leaves agents running.
 - **Esc or ← in the list** focuses the main session without changing the right pane.
 - **Ctrl+Z retains Pi's normal suspend behavior** in main and agent sessions. There is no browse command to run: the list opens automatically on the first spawn.
+
+The list uses aligned agent, activity, and elapsed-time columns, with the selected row highlighted and shortcuts in a separate footer. Narrow panes drop activity first, then elapsed time, to preserve agent names. The main session keeps its count and navigation hint on opposite sides of one line; child tool widgets put shortcuts on their own line.
 
 The list uses its own fullscreen TUI, so clicks do not depend on the main Pi session's display mode. If tmux intercepts clicks rather than forwarding them, enable mouse support with `tmux set -g mouse on`.
 

@@ -167,7 +167,7 @@ export default function (pi: ExtensionAPI) {
         if (expanded) {
           // Expanded: full tool list + denied
           const countInfo = theme.fg("dim", ` — ${toolNames.length} available`);
-          const hint = theme.fg("muted", `  ${AGENT_LIST_HINT} · Ctrl+Alt+O collapse`);
+          const hint = theme.fg("muted", `${AGENT_LIST_HINT}    Ctrl+Alt+O  Collapse`);
 
           const toolList = toolNames
             .map((name: string) => theme.fg("dim", name))
@@ -182,7 +182,7 @@ export default function (pi: ExtensionAPI) {
           }
 
           const content = new Text(
-            `${agentTag}${countInfo}${hint}\n${toolList}${deniedLine}`,
+            `${agentTag}${countInfo}\n${toolList}${deniedLine}\n${hint}`,
             0,
             0,
           );
@@ -192,11 +192,11 @@ export default function (pi: ExtensionAPI) {
           const countInfo = theme.fg("dim", ` — ${toolNames.length} tools`);
           const deniedInfo =
             denied.length > 0
-              ? theme.fg("dim", " · ") + theme.fg("error", `${denied.length} denied`)
+              ? theme.fg("dim", "   ") + theme.fg("error", `${denied.length} denied`)
               : "";
-          const hint = theme.fg("muted", `  ${AGENT_LIST_HINT} · Ctrl+Alt+O tools`);
+          const hint = theme.fg("muted", `${AGENT_LIST_HINT}    Ctrl+Alt+O  Tools`);
 
-          const content = new Text(`${agentTag}${countInfo}${deniedInfo}${hint}`, 0, 0);
+          const content = new Text(`${agentTag}${countInfo}${deniedInfo}\n${hint}`, 0, 0);
           box.addChild(content);
         }
 
