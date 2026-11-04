@@ -27,6 +27,7 @@ const mocha = {
   mauve: parseColor("#cba6f7"),
   green: parseColor("#a6e3a1"),
   peach: parseColor("#fab387"),
+  olive: parseColor("#3b4133"),
   red: parseColor("#f38ba8"),
 };
 
@@ -102,8 +103,8 @@ export class Footer {
     if (guard)
       segments.push({
         text: guard,
-        bg: guard.includes("OFF") ? mocha.red : mocha.surface,
-        fg: guard.includes("OFF") ? mocha.base : mocha.green,
+        bg: mocha.olive,
+        fg: guard.includes("OFF") ? mocha.peach : mocha.green,
       });
     const project: Segment = {
       text: `${s.project}${s.branch ? `  ${s.branch}` : ""}`,
@@ -134,7 +135,7 @@ export class Footer {
         ? `${detail}${safety ? ` ${safety}` : ""}`
         : truncateToWidth(safety, width, "");
       const line = this.theme.style(text, {
-        fg: guard.includes("OFF") ? mocha.red : mocha.text,
+        fg: guard.includes("OFF") ? mocha.peach : mocha.text,
         bg: mocha.base,
       });
       return [line.includes("\u001b") ? line + "\u001b[0m" : line];

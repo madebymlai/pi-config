@@ -19,12 +19,18 @@ it("publishes an enabled BG status when a guarded session starts", async () => {
   assert.equal(fixture.status(), "BG ON");
 });
 
+it("publishes plain BG OFF text when started with the guard disabled", async () => {
+  const fixture = setup(true);
+  await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+  assert.equal(String(fixture.status()).trim(), "BG OFF");
+});
+
 it("keeps the BG status published when the guard is re-enabled", async () => {
   const fixture = setup();
   await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
   const command = fixture.registeredCommands.find(command => command.name === "bash-guard")!;
   await command.handler("", fixture.ctx);
-  assert.match(String(fixture.status()), /BG OFF/);
+  assert.equal(String(fixture.status()).trim(), "BG OFF");
   await command.handler("", fixture.ctx);
   assert.equal(fixture.status(), "BG ON");
 });

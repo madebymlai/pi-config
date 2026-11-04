@@ -58,7 +58,7 @@ test("real Theme emits Mocha colors, resets transitions and supports 256-color t
   }
 });
 
-test("BG ON blends into the dark segments while BG OFF keeps a red warning background", () => {
+test("BG uses a dark olive segment with green ON text and soft peach OFF text", () => {
   const styled = new Theme(
     { muted: "#ffffff", text: "#ffffff", thinkingXhigh: "#ffffff" } as ConstructorParameters<typeof Theme>[0],
     { selectedBg: "#000000" } as ConstructorParameters<typeof Theme>[1],
@@ -66,12 +66,29 @@ test("BG ON blends into the dark segments while BG OFF keeps a red warning backg
   );
   const on = new Footer(() => snapshot, styled).render(160)[0];
   const onStyle = on.match(/((?:\x1b\[[\d;]*m)+) BG ON /)?.[1] ?? "";
-  assert.ok(onStyle.includes("\x1b[48;2;49;50;68m"), "BG ON uses the same dark Mocha surface as the token segment");
+  assert.ok(onStyle.includes("\x1b[48;2;59;65;51m"), "BG ON uses a dark olive background");
   assert.ok(onStyle.includes("\x1b[38;2;166;227;161m"), "BG ON text remains green");
-  const off = new Footer(() => ({ ...snapshot, statuses: new Map([[" bash-guard", "⚠ BG OFF"]]) }), styled).render(160)[0];
-  const offStyle = off.match(/((?:\x1b\[[\d;]*m)+) ⚠ BG OFF /)?.[1] ?? "";
-  assert.ok(offStyle.includes("\x1b[48;2;243;139;168m"), "BG OFF keeps its solid red warning");
-  assert.ok(offStyle.includes("\x1b[38;2;30;30;46m"), "BG OFF keeps contrasting dark text");
+  const off = new Footer(() => ({ ...snapshot, statuses: new Map([[" bash-guard", "BG OFF"]]) }), styled).render(160)[0];
+  const offStyle = off.match(/((?:\x1b\[[\d;]*m)+) BG OFF /)?.[1] ?? "";
+  assert.ok(offStyle.includes("\x1b[48;2;59;65;51m"), "BG OFF keeps the same dark olive background");
+  assert.ok(offStyle.includes("\x1b[38;2;250;179;135m"), "BG OFF uses soft peach warning text");
+  const narrow = new Footer(() => ({ ...snapshot, statuses: new Map([[" bash-guard", "BG OFF"]]) }), styled).render(6)[0];
+  assert.ok(narrow.includes("\x1b[38;2;250;179;135m"), "the compact warning also uses peach text");
+});
+
+test("BG's ordinary Powerline arrow carries its olive background into the next dark segment", () => {
+  const styled = new Theme(
+    { muted: "#ffffff", text: "#ffffff", thinkingXhigh: "#ffffff" } as ConstructorParameters<typeof Theme>[0],
+    { selectedBg: "#000000" } as ConstructorParameters<typeof Theme>[1],
+    "truecolor",
+  );
+  for (const guard of ["BG ON", "BG OFF"]) {
+    const line = new Footer(() => ({ ...snapshot, statuses: new Map([[" bash-guard", guard]]) }), styled).render(160)[0];
+    const afterGuard = line.slice(line.indexOf(` ${guard} `) + guard.length + 2);
+    const arrowStyle = afterGuard.match(/^((?:\x1b\[[\d;]*m)+)/)?.[1] ?? "";
+    assert.ok(arrowStyle.includes("\x1b[38;2;59;65;51m"), "the arrow uses the BG segment's own background colour");
+    assert.ok(arrowStyle.includes("\x1b[48;2;49;50;68m"), "the arrow stays on the dark segment background");
+  }
 });
 
 test("untrusted labels cannot inject terminal controls or additional rows", () => {
@@ -108,16 +125,16 @@ test("unknown context is neutral and explicit; over-capacity clamps only bar fil
 
 test("BG OFF survives narrow widths before model, tokens and powerline decoration", () => {
   const footer = new Footer(
-    () => ({ ...snapshot, statuses: new Map([[" bash-guard", "⚠ BG OFF"]]) }),
+    () => ({ ...snapshot, statuses: new Map([[" bash-guard", "BG OFF"]]) }),
     theme,
   );
-  assert.equal(plain(footer, 8), "⚠ BG OFF");
-  assert.equal(plain(footer, 1), "⚠");
+  assert.equal(plain(footer, 6), "BG OFF");
+  assert.equal(plain(footer, 1), "B");
   assert.deepEqual(footer.render(0), [""]);
-  for (const width of [1, 2, 7, 8, 9, 15, 30, 50, 79, 160]) {
+  for (const width of [1, 2, 5, 6, 7, 8, 9, 15, 30, 50, 79, 160]) {
     const lines = footer.render(width);
     assert.equal(lines.length, 1);
     assert.ok(visibleWidth(lines[0]) <= width, `overflow at ${width}`);
-    if (width >= 8) assert.ok(lines[0].includes("⚠ BG OFF"));
+    if (width >= 6) assert.ok(lines[0].includes("BG OFF"));
   }
 });

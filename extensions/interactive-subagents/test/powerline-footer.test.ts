@@ -82,6 +82,8 @@ it("renders a single aligned Powerline row in real Pi and updates model, effort,
     tmux("send-keys", "-t", main, "-l", "/bash-guard");
     tmux("send-keys", "-t", main, "Enter");
     await waitUntil(() => footerLine(main).includes("BG OFF"), detail);
+    assert.match(footerLine(main), / BG OFF /);
+    assert.doesNotMatch(footerLine(main), /[!⚠\uf071]/);
     assert.equal(screen(main).split("\n").filter(line => line.includes("BG OFF")).length, 1, "BG OFF is integrated, not a separate status row");
     assert.equal(borderRow(main), aligned);
     assert.equal(borderRow(main), borderRow(child));
