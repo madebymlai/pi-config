@@ -102,8 +102,8 @@ export class Footer {
     if (guard)
       segments.push({
         text: guard,
-        bg: guard.includes("OFF") ? mocha.red : mocha.green,
-        fg: mocha.base,
+        bg: guard.includes("OFF") ? mocha.red : mocha.surface,
+        fg: guard.includes("OFF") ? mocha.base : mocha.green,
       });
     const project: Segment = {
       text: `${s.project}${s.branch ? `  ${s.branch}` : ""}`,

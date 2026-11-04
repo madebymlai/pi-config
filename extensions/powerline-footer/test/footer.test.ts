@@ -58,6 +58,22 @@ test("real Theme emits Mocha colors, resets transitions and supports 256-color t
   }
 });
 
+test("BG ON blends into the dark segments while BG OFF keeps a red warning background", () => {
+  const styled = new Theme(
+    { muted: "#ffffff", text: "#ffffff", thinkingXhigh: "#ffffff" } as ConstructorParameters<typeof Theme>[0],
+    { selectedBg: "#000000" } as ConstructorParameters<typeof Theme>[1],
+    "truecolor",
+  );
+  const on = new Footer(() => snapshot, styled).render(160)[0];
+  const onStyle = on.match(/((?:\x1b\[[\d;]*m)+) BG ON /)?.[1] ?? "";
+  assert.ok(onStyle.includes("\x1b[48;2;49;50;68m"), "BG ON uses the same dark Mocha surface as the token segment");
+  assert.ok(onStyle.includes("\x1b[38;2;166;227;161m"), "BG ON text remains green");
+  const off = new Footer(() => ({ ...snapshot, statuses: new Map([[" bash-guard", "⚠ BG OFF"]]) }), styled).render(160)[0];
+  const offStyle = off.match(/((?:\x1b\[[\d;]*m)+) ⚠ BG OFF /)?.[1] ?? "";
+  assert.ok(offStyle.includes("\x1b[48;2;243;139;168m"), "BG OFF keeps its solid red warning");
+  assert.ok(offStyle.includes("\x1b[38;2;30;30;46m"), "BG OFF keeps contrasting dark text");
+});
+
 test("untrusted labels cannot inject terminal controls or additional rows", () => {
   const footer = new Footer(
     () => ({
