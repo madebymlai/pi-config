@@ -90,11 +90,11 @@ export class Footer {
       {
         text: `${bar} ${used}`,
         bg: mocha.overlay,
-        fg: !known
+        fg: s.used === null
           ? mocha.text
-          : ratio >= 0.9
+          : s.used >= 512_000
             ? mocha.red
-            : ratio >= 0.7
+            : s.used >= 256_000
               ? mocha.peach
               : mocha.green,
       },

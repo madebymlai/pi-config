@@ -58,6 +58,33 @@ test("real Theme emits Mocha colors, resets transitions and supports 256-color t
   }
 });
 
+test("context text turns peach at 256k and red at 512k regardless of model capacity", () => {
+  const styled = new Theme(
+    { muted: "#ffffff", text: "#ffffff", thinkingXhigh: "#ffffff" } as ConstructorParameters<typeof Theme>[0],
+    { selectedBg: "#000000" } as ConstructorParameters<typeof Theme>[1],
+    "truecolor",
+  );
+  const cases = [
+    [0, "166;227;161"],
+    [255999, "166;227;161"],
+    [256000, "250;179;135"],
+    [511999, "250;179;135"],
+    [512000, "243;139;168"],
+    [900000, "243;139;168"],
+    [null, "205;214;244"],
+  ] as const;
+  for (const contextWindow of [273000, 1000000, 0]) {
+    for (const [used, rgb] of cases) {
+      const line = new Footer(() => ({ ...snapshot, used, contextWindow }), styled).render(160)[0];
+      const contextStyle = line.match(/((?:\x1b\[[\d;]*m)+) [▰▱░]{10} /)?.[1] ?? "";
+      assert.ok(
+        contextStyle.includes(`\x1b[38;2;${rgb}m`),
+        `context color for ${used} tokens with capacity ${contextWindow}`,
+      );
+    }
+  }
+});
+
 test("BG uses a dark olive segment with green ON text and soft peach OFF text", () => {
   const styled = new Theme(
     { muted: "#ffffff", text: "#ffffff", thinkingXhigh: "#ffffff" } as ConstructorParameters<typeof Theme>[0],
