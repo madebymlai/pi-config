@@ -61,20 +61,45 @@ describe("extension wiring", () => {
       const lines = factory({}, ui.ctx.ui.theme).render(80);
       assert.equal(lines.length, 1, "the full agent list belongs in the right pane, not above the main input");
       assert.match(lines[0], /2 subagents/);
-      assert.match(lines[0], /\/subagent-view/);
+      assert.match(lines[0], /← empty prompt/);
+      assert.match(lines[0], /Ctrl\+Alt\+A/);
+      assert.doesNotMatch(lines[0], /subagent-view/);
     } finally {
       children.shutdown();
     }
   });
 
-  it("offers a keyboard command and explains when there are no agents to browse", async () => {
-    const { api, registeredCommands } = createMockExtensionApi();
+  it("replaces the browse command with a named shortcut in the main session", async () => {
+    const { api, registeredCommands, registeredShortcuts } = createMockExtensionApi();
     const ui = createMockContext();
     subagentsModule.default(api, { children: createChildren() });
-    const command = registeredCommands.find((c) => c.name === "subagent-view");
-    assert.ok(command, "the right-hand list needs a keyboard entry point from the main session");
-    await command.handler("", ui.ctx);
+    assert.ok(!registeredCommands.some((c) => c.name === "subagent-view"), "the retired command must be removed completely");
+    const shortcut = registeredShortcuts.find((s) => s.key === "ctrl+alt+a");
+    assert.ok(shortcut, "the main pane needs the same agent-list shortcut as children");
+    await shortcut.handler(ui.ctx);
     assert.match(ui.notifications.at(-1)?.text ?? "", /no.*subagents/i);
+  });
+
+  it("enables empty-prompt left navigation in main only while agents are live", async () => {
+    const { api, emit } = createMockExtensionApi();
+    const { ctx, terminalInputListeners } = createMockContext();
+    ctx.mode = "tui";
+    let forwarded = 0;
+    ctx.ui.setEditorComponent(() => ({ getText: () => "", handleInput() { forwarded++; } }));
+    const children = createChildren();
+    subagentsModule.default(api, { children });
+    await emit("session_start", {}, ctx);
+    try {
+      const editor = ctx.ui.getEditorComponent()({}, {}, {});
+      editor.handleInput("\x1b[D");
+      assert.equal(forwarded, 1, "without agents, leave the editor alone");
+      await children.launch({ base: "a", start: async (n) => entry("1", n), watch: forever });
+      editor.handleInput("\x1b[D");
+      assert.equal(forwarded, 1, "with agents, empty-prompt left opens the list");
+      assert.deepEqual([...terminalInputListeners][0]("\x1b\x01"), { consume: true });
+    } finally {
+      await emit("session_shutdown", {}, ctx);
+    }
   });
 
   it("paints a widget once a subagent is live", async () => {

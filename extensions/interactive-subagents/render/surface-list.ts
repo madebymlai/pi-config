@@ -98,13 +98,13 @@ export class SurfaceList implements Component {
 
   render(width: number): string[] {
     return ["Agents", ...(this.data.rows.length ? this.list.render(Math.max(4, width)) : ["No live agents"]),
-      this.error ? `Error: ${this.error}` : "Enter/click open · Ctrl+Z returns from agent",
-      "↑↓ move · PgUp/PgDn · Esc/Ctrl+Z main",
+      this.error ? `Error: ${this.error}` : "Enter/click open · ← empty / Ctrl+Alt+A list",
+      "↑↓ move · PgUp/PgDn · Esc/← main",
     ].slice(0, this.height).map((line) => truncateToWidth(line, Math.max(0, width), ""));
   }
 
   handleInput(data: string): void {
-    if ((["ctrl+z", "ctrl+c", "escape"] as const).some((key) => matchesKey(data, key))) {
+    if ((["left", "ctrl+c", "escape"] as const).some((key) => matchesKey(data, key))) {
       this.invoke(this.options.onBack);
     } else if (matchesKey(data, "pageUp")) {
       this.list.setSelectedIndex(this.selectedIndex() - this.maxVisible);

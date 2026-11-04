@@ -8,6 +8,7 @@ import {
   readListedAgents,
 } from "./render/agent-list.ts";
 import { renderSubagentCall, renderSubagentToolResult } from "./render/subagent-tool.ts";
+import { AGENT_LIST_HINT, registerSurfaceNavigation } from "./render/navigation.ts";
 import {
   readSubagentResultDetails,
   renderSubagentResult,
@@ -57,7 +58,6 @@ import {
   pollForExit,
   closeSurface,
   configureSurfaceList,
-  showSurfaceList,
   disposeSurfaces,
   shellEscape,
 } from "./spawn/tmux.ts";
@@ -285,7 +285,7 @@ function paintWidget(live: readonly RunningSubagent[]) {
       render(width: number) {
         return [truncateToWidth(
           theme.fg("accent", `${live.length} subagent${live.length === 1 ? "" : "s"}`) +
-            theme.fg("muted", " · /subagent-view to browse"),
+            theme.fg("muted", ` · ${AGENT_LIST_HINT}`),
           width,
         )];
       },
@@ -1031,6 +1031,7 @@ export default function subagentsExtension(
 ) {
   if (deps.children) children = deps.children;
   latestPi = pi;
+  registerSurfaceNavigation(pi, () => children.live().length > 0);
 
   // One tick drives both the widget and the status machine, and it runs only
   // while something is live. Rebound on every module load: `observe` replaces
@@ -1201,21 +1202,6 @@ export default function subagentsExtension(
     });
 
   registerSendMessage(pi, "children", createChildTransports(pi, { live: () => children.live() }));
-
-  pi.registerCommand("subagent-view", {
-    description: "Browse running subagents in the right pane",
-    handler: async (_args, ctx) => {
-      if (children.live().length === 0) {
-        ctx.ui.notify("No running subagents to browse.", "info");
-        return;
-      }
-      try {
-        showSurfaceList();
-      } catch (error) {
-        ctx.ui.notify(`Cannot open subagents: ${String(error)}`, "warning");
-      }
-    },
-  });
 
   // /subagent command — spawn a subagent by name
   pi.registerCommand("subagent", {

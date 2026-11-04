@@ -59,8 +59,12 @@ test("back shortcuts and failed callbacks never terminate the component", async 
   let backs = 0;
   const list = new SurfaceList({ onSelect: async () => { throw new Error("cannot open"); }, onBack: () => { backs++; } });
   list.update({ rows: [row("a")], showStatus: true });
-  for (const key of ["\x1a", "\x1b", "\x03"]) list.handleInput(key);
-  assert.equal(backs, 3);
+  for (const key of ["\x1b[D", "\x1b", "\x03"]) list.handleInput(key);
+  assert.equal(backs, 3, "left, Escape and Ctrl+C return focus to main");
+  list.handleInput("\x1a");
+  list.handleInput("\x1b\x01");
+  assert.equal(backs, 3, "neither the retired Ctrl+Z binding nor open-list shortcut should leave the list");
+  assert.doesNotMatch(list.render(100).join("\n"), /Ctrl\+Z/);
   list.handleInput("\r");
   await Promise.resolve();
   assert.match(list.render(80).join("\n"), /cannot open/);

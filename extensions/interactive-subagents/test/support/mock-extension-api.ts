@@ -33,7 +33,10 @@ export function createMockContext(opts: { hasUI?: boolean; sessionDir?: string; 
   const widgets: Array<{ key: string; value: unknown }> = [];
   const statuses: Array<{ key: string; value: unknown }> = [];
   const notifications: Array<{ text: string; level: string }> = [];
+  const terminalInputListeners = new Set<(data: string) => { consume?: boolean } | undefined>();
+  let editorFactory: any;
   return {
+    terminalInputListeners,
     widgets,
     statuses,
     notifications,
@@ -45,6 +48,12 @@ export function createMockContext(opts: { hasUI?: boolean; sessionDir?: string; 
     ctx: {
       hasUI: opts.hasUI ?? true,
       ui: {
+        getEditorComponent: () => editorFactory,
+        setEditorComponent(factory: any) { editorFactory = factory; },
+        onTerminalInput(handler: (data: string) => { consume?: boolean } | undefined) {
+          terminalInputListeners.add(handler);
+          return () => terminalInputListeners.delete(handler);
+        },
         setWidget(key: string, value: unknown) {
           widgets.push({ key, value });
         },
@@ -70,6 +79,7 @@ export function createMockExtensionApi() {
   /** Event handlers, so a test can drive a real session lifecycle. */
   const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
   const registeredCommands: Array<any> = [];
+  const registeredShortcuts: Array<any> = [];
   const registeredMessageRenderers: Array<any> = [];
   const sentUserMessages: string[] = [];
   const sentMessages: Array<any> = [];
@@ -87,6 +97,7 @@ export function createMockExtensionApi() {
     },
     registeredTools,
     registeredCommands,
+    registeredShortcuts,
     registeredMessageRenderers,
     sentUserMessages,
     sentMessages,
@@ -105,7 +116,9 @@ export function createMockExtensionApi() {
       registerMessageRenderer(name: string, renderer: any) {
         registeredMessageRenderers.push({ name, renderer });
       },
-      registerShortcut() {},
+      registerShortcut(key: string, shortcut: any) {
+        registeredShortcuts.push({ key, ...shortcut });
+      },
       sendUserMessage(message: string) {
         sentUserMessages.push(message);
       },

@@ -12,7 +12,7 @@ import type { SubagentLiveness } from "../observe/liveness.ts";
 import { createMockContext, createMockExtensionApi } from "./support/mock-extension-api.ts";
 
 // No provider calls: a real Pi editor is left idle in each child pane.
-it("click opens a live agent, Ctrl+Z returns to the list, and shutdown removes the deck", { timeout: 30_000 }, async () => {
+it("click opens an agent; empty left and Ctrl+Alt+A return without losing a draft", { timeout: 30_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-navigation-test-"));
   const socket = join(dir, "socket");
   const saved = { TMUX: process.env.TMUX, TMUX_PANE: process.env.TMUX_PANE };
@@ -57,7 +57,7 @@ it("click opens a live agent, Ctrl+Z returns to the list, and shutdown removes t
         watch: () => new Promise<void>(() => {}),
       });
     }
-    await waitUntil(() => screen(list).includes("Worker") && screen(b).includes("Ctrl+Z agents"), () => `List:\n${screen(list)}\nChild:\n${screen(b)}`);
+    await waitUntil(() => screen(list).includes("Worker") && screen(b).includes("Ctrl+Alt+A agents"), () => `List:\n${screen(list)}\nChild:\n${screen(b)}`);
     assert.deepEqual(visible(), [main, list]);
     assert.equal(tmux("display-message", "-p", "-t", main, "#{pane_active}"), "1");
 
@@ -66,14 +66,20 @@ it("click opens a live agent, Ctrl+Z returns to the list, and shutdown removes t
     tmux("send-keys", "-t", list, "-l", "\x1b[<0;3;3M\x1b[<0;3;3m");
     await waitUntil(() => visible().includes(b), () => screen(list));
     const pid = tmux("display-message", "-p", "-t", b, "#{pane_pid}");
-    tmux("send-keys", "-t", b, "C-z");
+    tmux("send-keys", "-t", b, "-l", "draft");
+    tmux("send-keys", "-t", b, "Left");
+    tmux("send-keys", "-t", b, "-l", "X");
+    await waitUntil(() => screen(b).includes("drafXt"), () => screen(b));
+    assert.ok(visible().includes(b), "left in a non-empty prompt must edit, not navigate away");
+    tmux("send-keys", "-t", b, "-l", "\x1b\x01"); // Ctrl+Alt+A
     await waitUntil(() => visible().includes(list), () => screen(b));
     assert.equal(tmux("display-message", "-p", "-t", b, "#{pane_pid}"), pid, "returning must not restart the agent");
     tmux("send-keys", "-t", list, "Enter");
     await waitUntil(() => visible().includes(b), () => screen(list));
-    tmux("send-keys", "-t", b, "C-z");
+    assert.ok(screen(b).includes("drafXt"), "the draft survives switching views");
+    tmux("send-keys", "-t", b, "C-e", "C-u", "Left");
     await waitUntil(() => visible().includes(list), () => screen(b));
-    tmux("send-keys", "-t", list, "Escape");
+    tmux("send-keys", "-t", list, "Left");
     await waitUntil(() => tmux("display-message", "-p", "-t", main, "#{pane_active}") === "1", () => "main did not regain focus");
     await mock.emit("session_shutdown", {}, ctx);
     assert.deepEqual(visible(), [main]);

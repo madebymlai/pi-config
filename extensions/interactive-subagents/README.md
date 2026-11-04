@@ -13,14 +13,15 @@ Main session                    │ Agents
                                 │ > scout (scout) · 23s · active
                                 │   fix-login (worker) · 45s · waiting
                                 │
-2 subagents · /subagent-view     │ Enter/click open · Ctrl+Z returns from agent
->                               │ ↑↓ move · PgUp/PgDn · Esc/Ctrl+Z main
+2 subagents · ← / Ctrl+Alt+A     │ Enter/click open · ← empty / Ctrl+Alt+A list
+>                               │ ↑↓ move · PgUp/PgDn · Esc/← main
 ```
 
 - **Click a row or press Enter** to replace the list with that agent's live terminal in the right half. Use **↑/↓**, **Home/End**, or **PgUp/PgDn** to navigate the list.
-- **Ctrl+Z inside an agent** returns to the list, even when a dialog has focus. It does **not** suspend, stop, or restart the agent.
-- **Esc or Ctrl+Z in the list** focuses the main session without changing the right pane.
-- **`/subagent-view` in the main session** opens and focuses the list.
+- **← on an empty prompt**, in either the main session or an agent, opens and focuses the list. With a draft, ← retains its normal cursor movement; dialog arrows are untouched.
+- **Ctrl+Alt+A from either pane** opens the list even with a draft or a focused dialog. The shortcut is listed in Pi's `/hotkeys`; switching views preserves the draft and leaves agents running.
+- **Esc or ← in the list** focuses the main session without changing the right pane.
+- **Ctrl+Z retains Pi's normal suspend behavior** in main and agent sessions. There is no browse command to run: the list opens automatically on the first spawn.
 
 The list uses its own fullscreen TUI, so clicks do not depend on the main Pi session's display mode. If tmux intercepts clicks rather than forwarding them, enable mouse support with `tmux set -g mouse on`.
 
